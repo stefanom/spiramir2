@@ -1,10 +1,8 @@
-from bpy.types import (
-    Operator,
-    Menu,
-)
 import time
 from mathutils import Vector, Matrix
-from math import cos, sin, pi
+from math import cos, sin, sqrt, log, exp, atan, pi
+
+import bpy
 from bpy_extras.object_utils import object_data_add
 from bpy.props import (
     EnumProperty,
@@ -13,7 +11,6 @@ from bpy.props import (
     IntProperty,
     FloatVectorProperty
 )
-import bpy
 
 bl_info = {
     "name": "Spiramir2",
@@ -26,6 +23,53 @@ bl_info = {
     "wiki_url": "",
     "category": "Add Curve"
 }
+
+
+def translate(p, t):
+    return (p[0] + t[0], p[1] + t[1])
+
+def rotate(p, angle):
+    cosA = cos(angle)
+    sinA = sin(angle)
+    return (p[0] * cosA - p[1] * sinA, p[0] * sinA + p[1] * cosA)
+
+def spiral_polar(t, b):
+    return exp(b * t)
+
+def spiral_cartesian(t, b, direction):
+    r = spiral_polar(b, t)
+    sign = 1 if direction == 'CLOCKWISE' else -1
+    return (r * cos(t), sign * r * sin(t))
+
+def spiral_length_at_angle(t, b):
+    return sqrt(1 + b*b) * exp(b * t) / b
+
+def spiral_angle_at_length(l, b):
+    return log(l * b / sqrt(1 + b*b)) / b
+
+
+def make_spiral(radius, b, segments, fraction, direction):
+    verts = []
+
+    t = log(radius) / b
+    length = spiral_length_at_angle(t, b)
+    rot = atan(1 / b)
+    origin = spiral_cartesian(t, b, direction)
+
+    step = (fraction * length) / segments
+
+    for i in range(segments):
+        l = length - i * step
+        angle = spiral_angle_at_length(l, b)
+        p = spiral_cartesian(angle, b, direction)
+        p = translate(p, (-origin[0], -origin[1]))
+        if direction == 'CLOCKWISE':
+            p = rotate(p, - t - rot - pi)
+        else:
+            p = rotate(p, t + rot + pi)
+        verts.append([p[0], p[1], 0])
+
+    return verts
 
 
 def get_align_matrix(context, location):
@@ -47,42 +91,17 @@ def vertsToPoints(verts):
     return vertArray
 
 
-def make_spiral(radius, b, turns, direction, steps):
-    max_phi = 2 * pi * turns
-    # angle in radians between two vertices
-    step_phi = max_phi / (steps * turns)
-
-    if direction == 'CLOCKWISE':
-        step_phi *= -1  # flip direction
-        max_phi *= -1
-
-    verts = []
-    verts.append([radius, 0, 0])
-
-    cur_phi = 0
-    while abs(cur_phi) <= abs(max_phi):
-        cur_phi += step_phi
-        cur_rad = radius * pow(b, abs(cur_phi))
-        px = cur_rad * cos(cur_phi)
-        py = cur_rad * sin(cur_phi)
-        verts.append([px, py, 0])
-
-    return verts
-
-
-def draw_spiral(context, radius=0.1, b=1.3, turns=3, direction='CLOCKWISE', steps=63, location=[0, 0, 0], rotation=[0, 0, 0]):
-    verts = make_spiral(radius, b, turns, direction, steps)
+def draw_spiral(context, radius, b, direction, segments, fraction, location, rotation):
+    verts = make_spiral(radius, b, segments, fraction, direction)
     align_matrix = get_align_matrix(context, location)
     splineType = 'POLY'
 
     if bpy.context.mode == 'EDIT_CURVE':
         Curve = context.active_object
-        newSpline = Curve.data.splines.new(type=splineType)          # spline
+        newSpline = Curve.data.splines.new(type=splineType)
     else:
-        # create curve
-        dataCurve = bpy.data.curves.new(
-            name='Spiral', type='CURVE')  # curvedatablock
-        newSpline = dataCurve.splines.new(type=splineType)          # spline
+        dataCurve = bpy.data.curves.new(name='Spiral', type='CURVE')
+        newSpline = dataCurve.splines.new(type=splineType)
 
         # create object with newCurve
         Curve = object_data_add(context, dataCurve)  # place in active scene
@@ -117,7 +136,7 @@ def draw_spiral(context, radius=0.1, b=1.3, turns=3, direction='CLOCKWISE', step
         bpy.ops.transform.rotate(value=rotation[2], orient_axis='Z')
 
 
-class CURVE_OT_spiramir(Operator):
+class CURVE_OT_spiramir(bpy.types.Operator):
     bl_idname = "curve.spiramir"
     bl_label = "Spiramir"
     bl_description = "Create a spiramir"
@@ -134,29 +153,29 @@ class CURVE_OT_spiramir(Operator):
         name="Direction",
         description="Direction of winding"
     )
-    turns: IntProperty(
-        default=1,
-        min=1, max=1000,
-        description="Length of Spiral in 360 deg"
-    )
-    steps: IntProperty(
-        default=64,
-        min=2, max=1000,
-        description="Number of Vertices per turn"
+    segments: IntProperty(
+        default=128,
+        min=1, max=1024,
+        description="Total Number of Vertices"
     )
     radius: FloatProperty(
-        default=1.00,
-        min=0.00, max=100.00,
-        description="Radius for first turn"
+        default=1.0,
+        min=0.00001, max=1000.00,
+        description="Radius of the spiral"
     )
-    b: FloatProperty(
-        default=1.2,
-        min=0.00, max=30.00,
-        description="Factor of exponent"
+    winding_factor: FloatProperty(
+        default=100,
+        min=1, max=10000,
+        description="Spiral Winding Factor"
+    )
+    fraction: FloatProperty(
+        default=0.92,
+        min=0.001, max=1.0,
+        description="Fraction of the spiral drawn"
     )
     edit_mode: BoolProperty(
         name="Show in edit mode",
-        default=False,
+        default=True,
         description="Show in edit mode"
     )
     location: FloatVectorProperty(
@@ -180,10 +199,10 @@ class CURVE_OT_spiramir(Operator):
 
         col = layout.column(align=True)
         col.label(text="Spiral Parameters:")
-        col.prop(self, "turns", text="Turns")
-        col.prop(self, "steps", text="Steps")
+        col.prop(self, "segments", text="Segments")
         col.prop(self, "radius", text="Radius")
-        col.prop(self, "b", text="Expansion Rate")
+        col.prop(self, "winding_factor", text="Winding Factor")
+        col.prop(self, "fraction", text="Drawn Fraction")
 
         col = layout.column()
         col.row().prop(self, "edit_mode", expand=True)
@@ -203,8 +222,11 @@ class CURVE_OT_spiramir(Operator):
 
         time_start = time.time()
 
-        draw_spiral(context, radius=self.radius, b=self.b, turns=self.turns, direction=self.direction,
-                    steps=self.steps, location=self.location, rotation=self.rotation)
+        b = 1 / (1 + log(self.winding_factor))
+
+        draw_spiral(context, radius=self.radius, b=b, direction=self.direction,
+                    segments=self.segments, fraction=self.fraction, location=self.location,
+                    rotation=self.rotation)
 
         if use_enter_edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
