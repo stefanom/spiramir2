@@ -1,6 +1,6 @@
 import time
 from mathutils import Vector, Matrix
-from math import cos, sin, sqrt, log, exp, atan, pi
+from math import cos, sin, sqrt, log, exp, atan, pi, acos
 
 import bpy
 from bpy_extras.object_utils import object_data_add
@@ -47,27 +47,38 @@ def spiral_length_at_angle(t, b):
 def spiral_angle_at_length(l, b):
     return log(l * b / sqrt(1 + b*b)) / b
 
+def obsculating_circle_radius_at_angle(t, b):
+    return b * spiral_length_at_angle(t, b)
 
-def make_spiral(radius, b, segments, fraction, direction):
+def angle_increment(t, b, curvature_error):
+    r = obsculating_circle_radius_at_angle(t, b)
+    return acos(r / (r + curvature_error))
+
+def make_spiral(radius, b, curvature_error, starting_angle, direction):
     verts = []
 
     t = log(radius) / b
     length = spiral_length_at_angle(t, b)
     rot = atan(1 / b)
-    origin = spiral_cartesian(t, b, direction)
 
-    step = (fraction * length) / segments
+    end = spiral_cartesian(t, b, direction)
 
-    for i in range(segments):
-        l = length - i * step
-        angle = spiral_angle_at_length(l, b)
+    angle = starting_angle
+
+    while True:
+        l = spiral_length_at_angle(angle, b)
+        if l >= length:
+            break
         p = spiral_cartesian(angle, b, direction)
-        p = translate(p, (-origin[0], -origin[1]))
+        p = translate(p, (-end[0], -end[1]))
         if direction == 'CLOCKWISE':
             p = rotate(p, - t - rot - pi)
         else:
             p = rotate(p, t + rot + pi)
-        verts.append([p[0], p[1], 0])
+        verts.append([p[0], p[1], 0, l])
+        angle += angle_increment(angle, b, curvature_error)
+
+    verts.append([0, 0, 0, length])
 
     return verts
 
@@ -85,50 +96,69 @@ def get_align_matrix(context, location):
 
 def vertsToPoints(verts):
     vertArray = []
+    lengthArray = []
     for v in verts:
-        vertArray += v
+        vertArray.extend(v[0:3])
         vertArray.append(0)
-    return vertArray
+        lengthArray.append(v[3])
+    return vertArray, lengthArray
 
 
-def draw_spiral(context, radius, b, direction, segments, fraction, location, rotation):
-    verts = make_spiral(radius, b, segments, fraction, direction)
+def get_selected_vertices(curve):
+    points = []
+    for spline in curve.data.splines:
+        for point in spline.points:
+            if point.select:
+                points.append(point)
+    return points[-1]
+
+
+def draw_spiral(context, radius, b, direction, curvature_error, starting_angle, location, rotation):
+    verts = make_spiral(radius, b, curvature_error, starting_angle, direction)
     align_matrix = get_align_matrix(context, location)
     splineType = 'POLY'
 
     if bpy.context.mode == 'EDIT_CURVE':
-        Curve = context.active_object
-        newSpline = Curve.data.splines.new(type=splineType)
+        curve = context.active_object
+        selected_vertex = get_selected_vertices(curve)
+        if selected_vertex:
+            location = selected_vertex.co[0:3]
+            length = selected_vertex.weight
+            print(location, length)
+        newSpline = curve.data.splines.new(type=splineType)
     else:
         dataCurve = bpy.data.curves.new(name='Spiral', type='CURVE')
         newSpline = dataCurve.splines.new(type=splineType)
 
-        # create object with newCurve
-        Curve = object_data_add(context, dataCurve)  # place in active scene
-        Curve.matrix_world = align_matrix  # apply matrix
-        Curve.rotation_euler = rotation
-        Curve.select_set(True)
+        # Create object with newCurve.
+        curve = object_data_add(context, dataCurve)  # Place in active scene
+        curve.matrix_world = align_matrix  # Apply matrix
+        curve.rotation_euler = rotation
+        curve.select_set(True)
 
-    # set curveOptions
-    Curve.data.dimensions = '2D'
-    Curve.data.use_path = True
-    Curve.data.fill_mode = 'BOTH'
+    # Set curveOptions.
+    curve.data.dimensions = '2D'
+    curve.data.use_path = True
+    curve.data.fill_mode = 'BOTH'
 
-    # turn verts into array
-    vertArray = vertsToPoints(verts)
+    # Turn verts into array
+    vertArray, lengthArray = vertsToPoints(verts)
 
-    for spline in Curve.data.splines:
+    # Deselect all points.
+    for spline in curve.data.splines:
         for point in spline.points:
             point.select = False
 
-    # create newSpline from vertarray
+    # Create newSpline from vertarray.
     newSpline.points.add(int(len(vertArray) / 4 - 1))
     newSpline.points.foreach_set('co', vertArray)
+    newSpline.points.foreach_set('weight', lengthArray)
+    newSpline.points.foreach_set('radius', [l**(1./3) for l in lengthArray])
     newSpline.use_endpoint_u = False
     for point in newSpline.points:
         point.select = True
 
-    # move and rotate spline in edit mode
+    # Move and rotate spline in edit mode.
     if bpy.context.mode == 'EDIT_CURVE':
         bpy.ops.transform.translate(value=location)
         bpy.ops.transform.rotate(value=rotation[0], orient_axis='X')
@@ -153,25 +183,25 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         name="Direction",
         description="Direction of winding"
     )
-    segments: IntProperty(
-        default=128,
-        min=1, max=1024,
-        description="Total Number of Vertices"
-    )
     radius: FloatProperty(
         default=1.0,
-        min=0.00001, max=1000.00,
+        min=0.00001, max=1000.0,
         description="Radius of the spiral"
     )
     winding_factor: FloatProperty(
-        default=100,
-        min=1, max=10000,
+        default=0.2,
+        min=0.0001, max=2,
         description="Spiral Winding Factor"
     )
-    fraction: FloatProperty(
-        default=0.92,
-        min=0.001, max=1.0,
-        description="Fraction of the spiral drawn"
+    starting_angle: FloatProperty(
+        default=-20.0,
+        min=-100.0, max=100.0,
+        description="Angle to start drawing the spiral"
+    )
+    curvature_error: FloatProperty(
+        default=0.001,
+        min=0.0000001, max=1000.0,
+        description="Maximum curvature error"
     )
     edit_mode: BoolProperty(
         name="Show in edit mode",
@@ -199,10 +229,10 @@ class CURVE_OT_spiramir(bpy.types.Operator):
 
         col = layout.column(align=True)
         col.label(text="Spiral Parameters:")
-        col.prop(self, "segments", text="Segments")
         col.prop(self, "radius", text="Radius")
         col.prop(self, "winding_factor", text="Winding Factor")
-        col.prop(self, "fraction", text="Drawn Fraction")
+        col.prop(self, "starting_angle", text="Starting Angle")
+        col.prop(self, "curvature_error", text="Curvature Error")
 
         col = layout.column()
         col.row().prop(self, "edit_mode", expand=True)
@@ -216,31 +246,18 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         box.prop(self, "rotation")
 
     def execute(self, context):
-        # turn off 'Enter Edit Mode'
-        use_enter_edit_mode = bpy.context.preferences.edit.use_enter_edit_mode
-        bpy.context.preferences.edit.use_enter_edit_mode = False
-
         time_start = time.time()
 
-        b = 1 / (1 + log(self.winding_factor))
-
-        draw_spiral(context, radius=self.radius, b=b, direction=self.direction,
-                    segments=self.segments, fraction=self.fraction, location=self.location,
-                    rotation=self.rotation)
-
-        if use_enter_edit_mode:
-            bpy.ops.object.mode_set(mode='EDIT')
-
-        # restore pre operator state
-        bpy.context.preferences.edit.use_enter_edit_mode = use_enter_edit_mode
+        draw_spiral(context, radius=self.radius, b=self.winding_factor, direction=self.direction,
+                    curvature_error=self.curvature_error, starting_angle=self.starting_angle,
+                    location=self.location, rotation=self.rotation)
 
         if self.edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
         else:
             bpy.ops.object.mode_set(mode='OBJECT')
 
-        self.report({'INFO'}, "Drawing Spiral Finished: %.4f sec" %
-                    (time.time() - time_start))
+        self.report({'INFO'}, "Drawing Spiral Finished: %.4f sec" % (time.time() - time_start))
 
         return {'FINISHED'}
 
@@ -251,9 +268,9 @@ def menu_func(self, context):
 
 def register():
     bpy.utils.register_class(CURVE_OT_spiramir)
-    bpy.types.VIEW3D_MT_add.append(menu_func)
+    bpy.types.VIEW3D_MT_curve_add.append(menu_func)
 
 
 def unregister():
     bpy.utils.unregister_class(CURVE_OT_spiramir)
-    bpy.types.VIEW3D_MT_add.remove(menu_func)
+    bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
