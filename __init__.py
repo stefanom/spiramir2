@@ -1,6 +1,8 @@
+from collections import deque
+from itertools import chain, repeat
 import time
 from mathutils import Vector, Matrix
-from math import cos, sin, sqrt, log, exp, atan, pi, acos
+from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos
 
 import bpy
 from bpy_extras.object_utils import object_data_add
@@ -35,8 +37,23 @@ def rotate(p, angle):
     return (p[0] * cosA - p[1] * sinA, p[0] * sinA + p[1] * cosA)
 
 
+def direction_sign(direction):
+    return 1 if direction == 'CLOCKWISE' else -1
+
+
+def direction_from_sign(value):
+    return 'CLOCKWISE' if value >= 0.0 else 'COUNTER_CLOCKWISE'
+
+
+def invert_direction(direction):
+    if direction == 'CLOCKWISE':
+        return 'COUNTER_CLOCKWISE'
+    else:
+        return 'CLOCKWISE'
+
+
 def cartesian(t, r, direction):
-    sign = 1 if direction == 'CLOCKWISE' else -1
+    sign = direction_sign(direction)
     return (r * cos(t), sign * r * sin(t))
 
 
@@ -77,6 +94,10 @@ def between(a, b):
     return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
 
 
+def angle_between_points(a, b):
+    return atan2(a[1] - b[1], a[0] - b[0])
+
+
 def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation_angle):
     verts = []
 
@@ -85,7 +106,7 @@ def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation_
     rot = atan(1 / b)
     diameter = 0
     mass_center = None
-
+    sign = direction_sign(direction)
     end = spiral_cartesian(t, b, direction)
 
     angle = starting_angle
@@ -96,18 +117,15 @@ def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation_
             break
         p = spiral_cartesian(angle, b, direction)
         p = translate(p, (-end[0], -end[1]))
-        if direction == 'CLOCKWISE':
-            p = rotate(p, - rotation_angle - t - rot - pi)
-        else:
-            p = rotate(p, rotation_angle + t + rot + pi)
-        verts.append([p[0], p[1], 0, l])
+        p = rotate(p, rotation_angle - sign * (t + rot + pi))
+        verts.append([p[0], p[1], 0, sign * l])
         d = distance((0, 0), p)
         if d > diameter:
             diameter = d
             mass_center = between((0, 0), p)
         angle += angle_increment(angle, b, curvature_error)
 
-    verts.append([0, 0, 0, length])
+    verts.append([0, 0, 0, sign * length])
 
     return verts, diameter, mass_center
 
@@ -138,22 +156,6 @@ def verts_to_points(verts):
     return vert_array, length_array
 
 
-def get_selected_vertices(curve):
-    points = []
-    for spline in curve.data.splines:
-        for point in spline.points:
-            if point.select:
-                points.append(point)
-    return points[-1]
-
-
-def invert_direction(direction):
-    if direction == 'CLOCKWISE':
-        return 'COUNTER_CLOCKWISE'
-    else:
-        return 'CLOCKWISE'
-
-
 def add_spline_to_curve(curve, spline_type, verts, location, rotation):
     vert_array, length_array = verts_to_points(verts)
 
@@ -167,7 +169,7 @@ def add_spline_to_curve(curve, spline_type, verts, location, rotation):
     new_spline.points.add(int(len(vert_array) / 4 - 1))
     new_spline.points.foreach_set('co', vert_array)
     new_spline.points.foreach_set('weight', length_array)
-    new_spline.points.foreach_set('radius', [l**(1./3) for l in length_array])
+    new_spline.points.foreach_set('radius', [abs(l)**(1./3) for l in length_array])
     new_spline.use_endpoint_u = False
 
     # Select all points.
@@ -181,6 +183,32 @@ def add_spline_to_curve(curve, spline_type, verts, location, rotation):
     bpy.ops.transform.rotate(value=rotation[2], orient_axis='Z')
 
 
+def windowed(seq, n, fillvalue=None, step=1):
+    window = deque(maxlen=n)
+    i = n
+    for _ in map(window.append, seq):
+        i -= 1
+        if not i:
+            i = step
+            yield tuple(window)
+
+    size = len(window)
+    if size < n:
+        yield tuple(chain(window, repeat(fillvalue, n - size)))
+    elif 0 < i < min(step, n):
+        window += (fillvalue,) * i
+        yield tuple(window)
+
+
+def get_selected_vertex(curve):
+    selected_points = []
+    for spline in curve.data.splines:
+        for points in windowed(spline.points, 2):
+            if points[1].select and points[0]:
+                selected_points.append(points)
+    return selected_points[-1]
+
+
 def draw_spiral(context, radius, b, direction, curvature_error, starting_angle, location, rotation):
     align_matrix = get_align_matrix(context, location)
     spline_type = 'POLY'
@@ -188,24 +216,20 @@ def draw_spiral(context, radius, b, direction, curvature_error, starting_angle, 
 
     if bpy.context.mode == 'EDIT_CURVE':
         curve = context.active_object
-        selected_vertex = get_selected_vertices(curve)
+        selected_vertex, previous_vertex = get_selected_vertex(curve)
         if selected_vertex:
             origin = selected_vertex.co[0:3]
-            length = selected_vertex.weight
+            length = abs(selected_vertex.weight)
+            direction = invert_direction(direction_from_sign(
+                selected_vertex.weight))
             radius = spiral_radius_at_length(length, b)
-
-            # This is weird but turns out the rotation of the spiral
-            # cancels out the changes we have to make to obtain the 
-            # tangent angle and the actual angle at length is the tangential
-            # angle in the frame of reference of the spiral with the origin
-            # at the end.
-            tangent_angle = spiral_angle_at_length(length, b)
+            tangent_angle = angle_between_points(previous_vertex.co, selected_vertex.co) + pi
 
             # tangent_vector = make_vector(
             #     tangent_angle, 0.3 * radius, direction)
-            # add_spline_to_curve(curve, spline_type, tangent_vector, origin, rotation)
+            # add_spline_to_curve(curve, spline_type,
+            #                     tangent_vector, origin, rotation)
 
-            direction = invert_direction(curve['spiramir_direction'])
             verts, _, _ = make_spiral(length_contraction * radius, b, curvature_error,
                                  starting_angle, direction, tangent_angle)
             add_spline_to_curve(curve, spline_type, verts, origin, rotation)
@@ -221,7 +245,6 @@ def draw_spiral(context, radius, b, direction, curvature_error, starting_angle, 
 
         curve['spiramir_radius'] = radius
         curve['spiramir_b'] = b
-        curve['spiramir_direction'] = direction
         curve['spiramir_curvature_error'] = curvature_error
         curve['spiramir_starting_angle'] = starting_angle
 
