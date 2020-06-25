@@ -28,7 +28,10 @@ bl_info = {
 
 
 def translate(p, t):
-    return (p[0] + t[0], p[1] + t[1])
+    if len(p) == 3 and len(t) == 3:
+        return (p[0] + t[0], p[1] + t[1], p[2] + t[2])
+    else:
+        return (p[0] + t[0], p[1] + t[1])
 
 
 def rotate(p, angle):
@@ -52,7 +55,7 @@ def invert_direction(direction):
         return 'CLOCKWISE'
 
 
-def cartesian(t, r, direction):
+def cartesian(t, r, direction='CLOCKWISE'):
     sign = direction_sign(direction)
     return (r * cos(t), sign * r * sin(t))
 
@@ -61,7 +64,7 @@ def spiral_polar(t, b):
     return exp(b * t)
 
 
-def spiral_cartesian(t, b, direction):
+def spiral_cartesian(t, b, direction='CLOCKWISE'):
     return cartesian(t, spiral_polar(b, t), direction)
 
 
@@ -98,7 +101,7 @@ def angle_between_points(a, b):
     return atan2(a[1] - b[1], a[0] - b[0])
 
 
-def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation_angle):
+def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation):
     verts = []
 
     t = log(radius) / b
@@ -117,22 +120,32 @@ def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation_
             break
         p = spiral_cartesian(angle, b, direction)
         p = translate(p, (-end[0], -end[1]))
-        p = rotate(p, rotation_angle - sign * (t + rot + pi))
-        verts.append([p[0], p[1], 0, sign * l])
+        p = rotate(p, rotation - sign * (t + rot + pi))
+        verts.append((p[0], p[1], 0, sign * l))
         d = distance((0, 0), p)
         if d > diameter:
             diameter = d
             mass_center = between((0, 0), p)
         angle += angle_increment(angle, b, curvature_error)
 
-    verts.append([0, 0, 0, sign * length])
+    verts.append((0, 0, 0, sign * length))
 
-    return verts, diameter, mass_center
+    return verts, diameter / 2, (mass_center[0], mass_center[1], 0)
 
 
-def make_vector(angle, radius, direction):
-    v = cartesian(angle, radius, direction)
-    return [[0, 0, 0, 0], [v[0], v[1], 0, 0]]
+def make_vector(angle, radius):
+    v = cartesian(angle, radius)
+    return [(0, 0, 0, 0), (v[0], v[1], 0, 0)]
+
+
+def make_circle(radius, segments):
+    verts = []
+    angle = 2 * pi / segments
+    for i in range(segments):
+        p = cartesian(angle * i, radius)
+        verts.append((p[0], p[1], 0, 0))
+    verts.append((radius, 0, 0, 0))
+    return verts
 
 
 def get_align_matrix(context, location):
@@ -146,41 +159,14 @@ def get_align_matrix(context, location):
     return align_matrix
 
 
-def verts_to_points(verts):
+def verts_to_points(verts, location):
     vert_array = []
     length_array = []
     for v in verts:
-        vert_array.extend(v[0:3])
+        vert_array.extend(translate(v[0:3], location))
         vert_array.append(0)
         length_array.append(v[3])
     return vert_array, length_array
-
-
-def add_spline_to_curve(curve, spline_type, verts, location, rotation):
-    vert_array, length_array = verts_to_points(verts)
-
-    # Deselect all points.
-    for spline in curve.data.splines:
-        for point in spline.points:
-            point.select = False
-
-    # Create new spline from vert_array.
-    new_spline = curve.data.splines.new(type=spline_type)
-    new_spline.points.add(int(len(vert_array) / 4 - 1))
-    new_spline.points.foreach_set('co', vert_array)
-    new_spline.points.foreach_set('weight', length_array)
-    new_spline.points.foreach_set('radius', [abs(l)**(1./3) for l in length_array])
-    new_spline.use_endpoint_u = False
-
-    # Select all points.
-    for point in new_spline.points:
-        point.select = True
-
-    # Translate and rotate.
-    bpy.ops.transform.translate(value=location)
-    bpy.ops.transform.rotate(value=rotation[0], orient_axis='X')
-    bpy.ops.transform.rotate(value=rotation[1], orient_axis='Y')
-    bpy.ops.transform.rotate(value=rotation[2], orient_axis='Z')
 
 
 def windowed(seq, n, fillvalue=None, step=1):
@@ -209,10 +195,13 @@ def get_selected_vertex(curve):
     return selected_points[-1]
 
 
-def draw_spiral(context, radius, b, direction, curvature_error, starting_angle, location, rotation):
-    align_matrix = get_align_matrix(context, location)
-    spline_type = 'POLY'
+def draw_spiral(props, context):
+    origin = [0, 0, 0]
     length_contraction = 0.8
+    tangent_angle = 0.0
+    b = props.winding_factor
+    radius = props.radius
+    direction = props.direction
 
     if bpy.context.mode == 'EDIT_CURVE':
         curve = context.active_object
@@ -220,36 +209,48 @@ def draw_spiral(context, radius, b, direction, curvature_error, starting_angle, 
         if selected_vertex:
             origin = selected_vertex.co[0:3]
             length = abs(selected_vertex.weight)
-            direction = invert_direction(direction_from_sign(
-                selected_vertex.weight))
-            radius = spiral_radius_at_length(length, b)
+            direction = invert_direction(direction_from_sign(selected_vertex.weight))
+            radius = length_contraction * spiral_radius_at_length(length, b)
             tangent_angle = angle_between_points(previous_vertex.co, selected_vertex.co) + pi
-
-            # tangent_vector = make_vector(
-            #     tangent_angle, 0.3 * radius, direction)
-            # add_spline_to_curve(curve, spline_type,
-            #                     tangent_vector, origin, rotation)
-
-            verts, _, _ = make_spiral(length_contraction * radius, b, curvature_error,
-                                 starting_angle, direction, tangent_angle)
-            add_spline_to_curve(curve, spline_type, verts, origin, rotation)
-
     else:
         data_curve = bpy.data.curves.new(name='Spiral', type='CURVE')
+
         curve = object_data_add(context, data_curve)  # Place in active scene
-        curve.matrix_world = align_matrix  # Apply matrix
-        curve.rotation_euler = rotation
+        curve.matrix_world = get_align_matrix(context, origin)
         curve.select_set(True)
 
         curve.data.dimensions = '2D'
+        curve.data.use_path = True
+        curve.data.fill_mode = 'BOTH'
 
-        curve['spiramir_radius'] = radius
         curve['spiramir_b'] = b
-        curve['spiramir_curvature_error'] = curvature_error
-        curve['spiramir_starting_angle'] = starting_angle
+        curve['spiramir_curvature_error'] = props.curvature_error
+        curve['spiramir_starting_angle'] = props.starting_angle
 
-        verts, _, _ = make_spiral(radius, b, curvature_error, starting_angle, direction, 0)
-        add_spline_to_curve(curve, spline_type, verts, location, rotation)
+    spiral, spiral_radius, spiral_mass_center = make_spiral(radius, b, 
+        props.curvature_error, props.starting_angle, direction, tangent_angle)
+
+    if props.draw_circle:
+        circle = make_circle(spiral_radius, 64)
+        add_spline_to_curve(
+            curve, circle, translate(origin, spiral_mass_center))
+
+    if props.draw_tangent:
+        tangent_vector = make_vector(tangent_angle, 0.4 * radius)
+        add_spline_to_curve(curve, tangent_vector, origin)
+
+    add_spline_to_curve(curve, spiral, origin)
+
+
+def add_spline_to_curve(curve, verts, location):
+    vert_array, length_array = verts_to_points(verts, location)
+
+    new_spline = curve.data.splines.new(type='POLY')
+    new_spline.points.add(int(len(vert_array) / 4 - 1))
+    new_spline.points.foreach_set('co', vert_array)
+    new_spline.points.foreach_set('weight', length_array)
+    new_spline.points.foreach_set(
+        'radius', [abs(l)**(1./3) for l in length_array])
 
 
 class CURVE_OT_spiramir(bpy.types.Operator):
@@ -289,22 +290,20 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         min=0.0000001, max=1000.0,
         description="Maximum curvature error"
     )
+    draw_circle: BoolProperty(
+        name="Draw circle",
+        default=False,
+        description="Draw the occupancy circle"
+    )
+    draw_tangent: BoolProperty(
+        name="Draw tangent",
+        default=False,
+        description="Draw the tangent vector"
+    )
     edit_mode: BoolProperty(
         name="Show in edit mode",
         default=True,
         description="Show in edit mode"
-    )
-    location: FloatVectorProperty(
-        name="",
-        description="Start location",
-        default=(0.0, 0.0, 0.0),
-        subtype='TRANSLATION'
-    )
-    rotation: FloatVectorProperty(
-        name="",
-        description="Rotation",
-        default=(0.0, 0.0, 0.0),
-        subtype='EULER'
     )
 
     def draw(self, context):
@@ -321,22 +320,14 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         col.prop(self, "curvature_error", text="Curvature Error")
 
         col = layout.column()
+        col.row().prop(self, "draw_circle", expand=True)
+        col.row().prop(self, "draw_tangent", expand=True)
         col.row().prop(self, "edit_mode", expand=True)
-
-        box = layout.box()
-        box.label(text="Location:")
-        box.prop(self, "location")
-
-        box = layout.box()
-        box.label(text="Rotation:")
-        box.prop(self, "rotation")
 
     def execute(self, context):
         time_start = time.time()
 
-        draw_spiral(context, radius=self.radius, b=self.winding_factor, direction=self.direction,
-                    curvature_error=self.curvature_error, starting_angle=self.starting_angle,
-                    location=self.location, rotation=self.rotation)
+        draw_spiral(self, context)
 
         if self.edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
