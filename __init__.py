@@ -195,6 +195,17 @@ def get_selected_vertex(curve):
     return selected_points[-1]
 
 
+def add_spline_to_curve(curve, verts, location):
+    vert_array, length_array = verts_to_points(verts, location)
+
+    new_spline = curve.data.splines.new(type='POLY')
+    new_spline.points.add(int(len(vert_array) / 4 - 1))
+    new_spline.points.foreach_set('co', vert_array)
+    new_spline.points.foreach_set('weight', length_array)
+    new_spline.points.foreach_set(
+        'radius', [abs(l)**(1./3) for l in length_array])
+
+
 def draw_spiral(props, context):
     origin = [0, 0, 0]
     length_contraction = 0.8
@@ -213,7 +224,7 @@ def draw_spiral(props, context):
             radius = length_contraction * spiral_radius_at_length(length, b)
             tangent_angle = angle_between_points(previous_vertex.co, selected_vertex.co) + pi
     else:
-        data_curve = bpy.data.curves.new(name='Spiral', type='CURVE')
+        data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
 
         curve = object_data_add(context, data_curve)  # Place in active scene
         curve.matrix_world = get_align_matrix(context, origin)
@@ -242,15 +253,70 @@ def draw_spiral(props, context):
     add_spline_to_curve(curve, spiral, origin)
 
 
-def add_spline_to_curve(curve, verts, location):
-    vert_array, length_array = verts_to_points(verts, location)
+def draw_sprue(curve, contact, contact_radius, mass_center, props):
+    sprue = curve.data.splines.new(type='BEZIER')
+    sprue.bezier_points.add(1)
+    points = sprue.bezier_points
 
-    new_spline = curve.data.splines.new(type='POLY')
-    new_spline.points.add(int(len(vert_array) / 4 - 1))
-    new_spline.points.foreach_set('co', vert_array)
-    new_spline.points.foreach_set('weight', length_array)
-    new_spline.points.foreach_set(
-        'radius', [abs(l)**(1./3) for l in length_array])
+    points[0].co = contact
+    points[0].radius = contact_radius
+    points[0].handle_right = translate(contact, (0, 0, props.curvature * props.height))
+    points[0].handle_right_type = 'FREE'
+    points[0].handle_left = contact
+    points[0].handle_left_type = 'FREE'
+
+    top = translate(mass_center, (0, 0, props.height))
+    points[1].co = top
+    points[1].radius = props.radius
+    points[1].handle_left = translate(top, (0, 0, - props.curvature * props.height))
+    points[1].handle_left_type = 'FREE'
+    points[1].handle_right = top
+    points[1].handle_right_type = 'FREE'
+
+
+def get_mass_center(points):
+    mass_center = (0,0,0)
+    for point in points:
+        mass_center = translate(mass_center, point.co[0:3])
+    return (mass_center[0] / len(points), mass_center[1] / len(points), 0)
+
+
+def draw_sprues_for_spline(curve, spline, props):
+    contacts = []
+    starting_length = abs(spline.points[0].weight)
+    length = 0.0
+    contacts.append(spline.points[0])
+
+    for point in spline.points:
+        length += abs(point.weight) - starting_length
+        if length > props.distance:
+            contacts.append(point)
+            length %= props.distance
+
+    mass_center = get_mass_center(contacts)
+
+    for point in contacts:
+        draw_sprue(
+            curve, point.co[0:3], point.radius, mass_center, props)
+
+def draw_sprues(spiramir, props, context):
+    origin = [0, 0, 0]
+    data_curve = bpy.data.curves.new(name='Sprues', type='CURVE')
+
+    curve = object_data_add(context, data_curve)  # Place in active scene
+    curve.matrix_world = get_align_matrix(context, origin)
+    curve.select_set(True)
+
+    curve.data.dimensions = '3D'
+    curve.data.resolution_u = 32
+    curve.data.use_path = True
+    curve.data.fill_mode = 'FULL'
+
+    curve['spiramir_sprues'] = True
+
+    for spline in spiramir.data.splines:
+        if spline.points[0].weight != 0:
+            draw_sprues_for_spline(curve, spline, props)
 
 
 class CURVE_OT_spiramir(bpy.types.Operator):
@@ -339,24 +405,95 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CURVE_OT_spiramir_sprues(bpy.types.Operator):
+    bl_idname = "curve.spiramir_sprues"
+    bl_label = "Spiramir Sprues"
+    bl_description = "Create sprues for a spiramir"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    distance: FloatProperty(
+        default=5.0,
+        min=0.00001, max=1000.0,
+        description="Distance between sprues"
+    )
+
+    height: FloatProperty(
+        default=1.0,
+        min=0.00001, max=1000.0,
+        description="Height of the end point of the sprues (on the Z axis)"
+    )
+
+    radius: FloatProperty(
+        default=0.1,
+        min=0.00001, max=1000.0,
+        description="Radius of the top of the sprue"
+    )
+
+    curvature: FloatProperty(
+        default=0.5,
+        min=0.0, max=1.0,
+        description="Curvature of the sprue"
+    )
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        col.prop(self, "distance", text="Distance")
+        col.prop(self, "height", text="Height")
+        col.prop(self, "radius", text="Radius")
+        col.prop(self, "curvature", text="Curvature")
+
+    def execute(self, context):
+        curve = context.active_object
+
+        if not curve:
+            self.report({'ERROR'}, "Drawing Spiramir sprues requires an object to be selected.")
+            return {'FINISHED'}
+
+        if not 'spiramir_b' in curve:
+            self.report({'ERROR'}, "Drawing Spiramir sprues requires a spiramir to be selected.")
+            return {'FINISHED'}
+
+        if curve.mode != 'OBJECT':
+            self.report({'ERROR'}, "Drawing Spiramir sprues requires to be in object mode.")
+            return {'FINISHED'}
+
+        self.report({'INFO'}, "Drawing sprues for spiramir: {}".format(curve))
+
+        time_start = time.time()
+
+        draw_sprues(curve, self, context)
+
+        self.report({'INFO'}, "Drawing Sprues Finished: %.4f sec" %
+                    (time.time() - time_start))
+
+        return {'FINISHED'}
+
+
 def menu_func(self, context):
     self.layout.operator(CURVE_OT_spiramir.bl_idname)
+    self.layout.operator(CURVE_OT_spiramir_sprues.bl_idname)
 
 
 addon_keymaps = []
 
 def register():
     bpy.utils.register_class(CURVE_OT_spiramir)
+    bpy.utils.register_class(CURVE_OT_spiramir_sprues)
     bpy.types.VIEW3D_MT_curve_add.append(menu_func)
 
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon
     km = kc.keymaps.new(name="3D View Generic",
                         space_type='VIEW_3D', region_type='WINDOW')
-    kmi = km.keymap_items.new(
+    kmi1 = km.keymap_items.new(
         CURVE_OT_spiramir.bl_idname, 'S', 'PRESS', ctrl=True, shift=True)
+    kmi2 = km.keymap_items.new(
+        CURVE_OT_spiramir_sprues.bl_idname, 'T', 'PRESS', ctrl=True, shift=True)
 
-    addon_keymaps.append((km, kmi))
+    addon_keymaps.append((km, kmi1))
+    addon_keymaps.append((km, kmi2))
 
 
 def unregister():
@@ -364,5 +501,6 @@ def unregister():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
 
+    bpy.utils.unregister_class(CURVE_OT_spiramir_sprues)
     bpy.utils.unregister_class(CURVE_OT_spiramir)
     bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
