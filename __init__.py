@@ -381,15 +381,16 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
 
     def get_contact_points_for_spline(self, spline):
         contacts = []
-        starting_length = abs(spline.points[0].weight)
-        length = 0.0
-        contacts.append(spline.points[0])
+        previous_length = abs(spline.points[0].weight)
+        travel = 0.0
 
         for point in spline.points:
-            length += abs(point.weight) - starting_length
-            if length > self.distance:
+            length = abs(point.weight)
+            travel += length - previous_length
+            previous_length = length
+            if travel > self.distance:
                 contacts.append(point)
-                length %= self.distance
+                travel %= self.distance
 
         return contacts
 
