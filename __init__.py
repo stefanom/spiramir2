@@ -159,14 +159,11 @@ def get_align_matrix(context, location):
     return align_matrix
 
 
-def verts_to_points(verts, location):
-    vert_array = []
-    length_array = []
-    for v in verts:
-        vert_array.extend(translate(v[0:3], location))
-        vert_array.append(0)
-        length_array.append(v[3])
-    return vert_array, length_array
+def get_mass_center(points):
+    mass_center = (0, 0, 0)
+    for point in points:
+        mass_center = translate(mass_center, point.co[0:3])
+    return (mass_center[0] / len(points), mass_center[1] / len(points), 0)
 
 
 def windowed(seq, n, fillvalue=None, step=1):
@@ -195,6 +192,16 @@ def get_selected_vertex(curve):
     return selected_points[-1]
 
 
+def verts_to_points(verts, location):
+    vert_array = []
+    length_array = []
+    for v in verts:
+        vert_array.extend(translate(v[0:3], location))
+        vert_array.append(0)
+        length_array.append(v[3])
+    return vert_array, length_array
+
+
 def add_spline_to_curve(curve, verts, location):
     vert_array, length_array = verts_to_points(verts, location)
 
@@ -204,119 +211,6 @@ def add_spline_to_curve(curve, verts, location):
     new_spline.points.foreach_set('weight', length_array)
     new_spline.points.foreach_set(
         'radius', [abs(l)**(1./3) for l in length_array])
-
-
-def draw_spiral(props, context):
-    origin = [0, 0, 0]
-    length_contraction = 0.8
-    tangent_angle = 0.0
-    b = props.winding_factor
-    radius = props.radius
-    direction = props.direction
-
-    if bpy.context.mode == 'EDIT_CURVE':
-        curve = context.active_object
-        selected_vertex, previous_vertex = get_selected_vertex(curve)
-        if selected_vertex:
-            origin = selected_vertex.co[0:3]
-            length = abs(selected_vertex.weight)
-            direction = invert_direction(direction_from_sign(selected_vertex.weight))
-            radius = length_contraction * spiral_radius_at_length(length, b)
-            tangent_angle = angle_between_points(previous_vertex.co, selected_vertex.co) + pi
-    else:
-        data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
-
-        curve = object_data_add(context, data_curve)  # Place in active scene
-        curve.matrix_world = get_align_matrix(context, origin)
-        curve.select_set(True)
-
-        curve.data.dimensions = '2D'
-        curve.data.use_path = True
-        curve.data.fill_mode = 'BOTH'
-
-        curve['spiramir_b'] = b
-        curve['spiramir_curvature_error'] = props.curvature_error
-        curve['spiramir_starting_angle'] = props.starting_angle
-
-    spiral, spiral_radius, spiral_mass_center = make_spiral(radius, b, 
-        props.curvature_error, props.starting_angle, direction, tangent_angle)
-
-    if props.draw_circle:
-        circle = make_circle(spiral_radius, 64)
-        add_spline_to_curve(
-            curve, circle, translate(origin, spiral_mass_center))
-
-    if props.draw_tangent:
-        tangent_vector = make_vector(tangent_angle, 0.4 * radius)
-        add_spline_to_curve(curve, tangent_vector, origin)
-
-    add_spline_to_curve(curve, spiral, origin)
-
-
-def draw_sprue(curve, contact, contact_radius, mass_center, props):
-    sprue = curve.data.splines.new(type='BEZIER')
-    sprue.bezier_points.add(1)
-    points = sprue.bezier_points
-
-    points[0].co = contact
-    points[0].radius = contact_radius
-    points[0].handle_right = translate(contact, (0, 0, props.curvature * props.height))
-    points[0].handle_right_type = 'FREE'
-    points[0].handle_left = contact
-    points[0].handle_left_type = 'FREE'
-
-    top = translate(mass_center, (0, 0, props.height))
-    points[1].co = top
-    points[1].radius = props.radius
-    points[1].handle_left = translate(top, (0, 0, - props.curvature * props.height))
-    points[1].handle_left_type = 'FREE'
-    points[1].handle_right = top
-    points[1].handle_right_type = 'FREE'
-
-
-def get_mass_center(points):
-    mass_center = (0,0,0)
-    for point in points:
-        mass_center = translate(mass_center, point.co[0:3])
-    return (mass_center[0] / len(points), mass_center[1] / len(points), 0)
-
-
-def draw_sprues_for_spline(curve, spline, props):
-    contacts = []
-    starting_length = abs(spline.points[0].weight)
-    length = 0.0
-    contacts.append(spline.points[0])
-
-    for point in spline.points:
-        length += abs(point.weight) - starting_length
-        if length > props.distance:
-            contacts.append(point)
-            length %= props.distance
-
-    mass_center = get_mass_center(contacts)
-
-    for point in contacts:
-        draw_sprue(
-            curve, point.co[0:3], point.radius, mass_center, props)
-
-def draw_sprues(spiramir, props, context):
-    origin = [0, 0, 0]
-    data_curve = bpy.data.curves.new(name='Sprues', type='CURVE')
-
-    curve = object_data_add(context, data_curve)  # Place in active scene
-    curve.matrix_world = get_align_matrix(context, origin)
-    curve.select_set(True)
-
-    curve.data.dimensions = '3D'
-    curve.data.resolution_u = 32
-    curve.data.use_path = True
-    curve.data.fill_mode = 'FULL'
-
-    curve['spiramir_sprues'] = True
-
-    for spline in spiramir.data.splines:
-        if spline.points[0].weight != 0:
-            draw_sprues_for_spline(curve, spline, props)
 
 
 class CURVE_OT_spiramir(bpy.types.Operator):
@@ -372,6 +266,54 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         description="Show in edit mode"
     )
 
+    def draw_spiral(self, context):
+        origin = [0, 0, 0]
+        length_contraction = 0.8
+        tangent_angle = 0.0
+        b = self.winding_factor
+        radius = self.radius
+        direction = self.direction
+
+        if bpy.context.mode == 'EDIT_CURVE':
+            curve = context.active_object
+            selected_vertex, previous_vertex = get_selected_vertex(curve)
+            if selected_vertex:
+                origin = selected_vertex.co[0:3]
+                length = abs(selected_vertex.weight)
+                direction = invert_direction(
+                    direction_from_sign(selected_vertex.weight))
+                radius = length_contraction * spiral_radius_at_length(length, b)
+                tangent_angle = angle_between_points(
+                    previous_vertex.co, selected_vertex.co) + pi
+        else:
+            data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
+
+            curve = object_data_add(context, data_curve)  # Place in active scene
+            curve.matrix_world = get_align_matrix(context, origin)
+            curve.select_set(True)
+
+            curve.data.dimensions = '2D'
+            curve.data.use_path = True
+            curve.data.fill_mode = 'BOTH'
+
+            curve['spiramir_b'] = b
+            curve['spiramir_curvature_error'] = self.curvature_error
+            curve['spiramir_starting_angle'] = self.starting_angle
+
+        spiral, spiral_radius, spiral_mass_center = make_spiral(
+            radius, b, self.curvature_error, self.starting_angle, direction, tangent_angle)
+
+        if self.draw_circle:
+            circle = make_circle(spiral_radius, 64)
+            add_spline_to_curve(
+                curve, circle, translate(origin, spiral_mass_center))
+
+        if self.draw_tangent:
+            tangent_vector = make_vector(tangent_angle, 0.4 * radius)
+            add_spline_to_curve(curve, tangent_vector, origin)
+
+        add_spline_to_curve(curve, spiral, origin)
+
     def draw(self, context):
         layout = self.layout
         col = layout.column_flow(align=True)
@@ -393,7 +335,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
     def execute(self, context):
         time_start = time.time()
 
-        draw_spiral(self, context)
+        self.draw_spiral(context)
 
         if self.edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
@@ -437,6 +379,69 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
         description="Curvature of the sprue"
     )
 
+    def get_contact_points_for_spline(self, spline):
+        contacts = []
+        starting_length = abs(spline.points[0].weight)
+        length = 0.0
+        contacts.append(spline.points[0])
+
+        for point in spline.points:
+            length += abs(point.weight) - starting_length
+            if length > self.distance:
+                contacts.append(point)
+                length %= self.distance
+
+        return contacts
+
+    def draw_sprue(self, curve, contact, contact_radius, mass_center):
+        sprue = curve.data.splines.new(type='BEZIER')
+        sprue.bezier_points.add(1)
+        points = sprue.bezier_points
+
+        points[0].co = contact
+        points[0].radius = contact_radius
+        points[0].handle_right = translate(
+            contact, (0, 0, self.curvature * self.height))
+        points[0].handle_right_type = 'FREE'
+        points[0].handle_left = contact
+        points[0].handle_left_type = 'FREE'
+
+        top = translate(mass_center, (0, 0, self.height))
+        points[1].co = top
+        points[1].radius = self.radius
+        points[1].handle_left = translate(
+            top, (0, 0, - self.curvature * self.height))
+        points[1].handle_left_type = 'FREE'
+        points[1].handle_right = top
+        points[1].handle_right_type = 'FREE'
+
+    def draw_sprues(self, spiramir, context):
+        origin = [0, 0, 0]
+        data_curve = bpy.data.curves.new(name='Sprues', type='CURVE')
+
+        curve = object_data_add(context, data_curve)  # Place in active scene
+        curve.matrix_world = get_align_matrix(context, origin)
+        curve.select_set(True)
+
+        curve.data.dimensions = '3D'
+        curve.data.resolution_u = 32
+        curve.data.use_path = True
+        curve.data.fill_mode = 'FULL'
+
+        curve['spiramir_sprues'] = True
+
+        contact_points = []
+
+        for spline in spiramir.data.splines:
+            if spline.points[0].weight != 0:
+                contact_points.extend(
+                    self.get_contact_points_for_spline(spline))
+
+        mass_center = get_mass_center(contact_points)
+
+        for point in contact_points:
+            self.draw_sprue(curve, point.co[0:3], point.radius, mass_center)
+
     def draw(self, context):
         col = self.layout.column(align=True)
         col.prop(self, "distance", text="Distance")
@@ -463,7 +468,7 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
 
         time_start = time.time()
 
-        draw_sprues(curve, self, context)
+        self.draw_sprues(curve, context)
 
         self.report({'INFO'}, "Drawing Sprues Finished: %.4f sec" %
                     (time.time() - time_start))
