@@ -356,9 +356,15 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     distance: FloatProperty(
-        default=5.0,
+        default=0.4,
         min=0.00001, max=1000.0,
-        description="Distance between sprues"
+        description="Distance on the curve between sprues"
+    )
+
+    offset: FloatProperty(
+        default=0.03,
+        min=0.00001, max=1000.0,
+        description="Offset to start from the beginning of the curve"
     )
 
     height: FloatProperty(
@@ -381,13 +387,18 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
 
     def get_contact_points_for_spline(self, spline):
         contacts = []
-        previous_length = abs(spline.points[0].weight)
         travel = 0.0
+        previous_length = abs(spline.points[0].weight)
+        first = True
 
         for point in spline.points:
             length = abs(point.weight)
             travel += length - previous_length
             previous_length = length
+            if first and travel > self.offset:
+                contacts.append(point)
+                travel = 0.0
+                first = False
             if travel > self.distance:
                 contacts.append(point)
                 travel %= self.distance
@@ -446,6 +457,7 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
     def draw(self, context):
         col = self.layout.column(align=True)
         col.prop(self, "distance", text="Distance")
+        col.prop(self, "offset", text="Offset")
         col.prop(self, "height", text="Height")
         col.prop(self, "radius", text="Radius")
         col.prop(self, "curvature", text="Curvature")
