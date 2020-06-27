@@ -1,6 +1,6 @@
 from collections import deque
 from itertools import chain, repeat
-import time
+import time, random
 from mathutils import Vector, Matrix
 from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos
 
@@ -32,6 +32,19 @@ def translate(p, t):
         return (p[0] + t[0], p[1] + t[1], p[2] + t[2])
     else:
         return (p[0] + t[0], p[1] + t[1])
+
+
+def to_4d(v):
+    if type(v) in [list, tuple]:
+        if len(v) == 1:
+            return (v[0], 0, 0, 0)
+        if len(v) == 2:
+            return (v[0], v[1], 0, 0)
+        if len(v) == 3:
+            return (v[0], v[1], v[2], 0)
+        return v
+    else:
+        return (v, 0, 0, 0)
 
 
 def rotate(p, angle):
@@ -108,7 +121,7 @@ def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation)
     length = spiral_length_at_angle(t, b)
     rot = atan(1 / b)
     diameter = 0
-    mass_center = None
+    mass_center = (0,0)
     sign = direction_sign(direction)
     end = spiral_cartesian(t, b, direction)
 
@@ -135,7 +148,11 @@ def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation)
 
 def make_vector(angle, radius):
     v = cartesian(angle, radius)
-    return [(0, 0, 0, 0), (v[0], v[1], 0, 0)]
+    return [(0, 0, 0, 0), to_4d(v)]
+
+
+def make_centripetal_vector(center):
+    return [(0, 0, 0, 0), to_4d(center)]
 
 
 def make_circle(radius, segments):
@@ -143,8 +160,8 @@ def make_circle(radius, segments):
     angle = 2 * pi / segments
     for i in range(segments):
         p = cartesian(angle * i, radius)
-        verts.append((p[0], p[1], 0, 0))
-    verts.append((radius, 0, 0, 0))
+        verts.append(to_4d(p))
+    verts.append(to_4d(radius))
     return verts
 
 
@@ -181,15 +198,6 @@ def windowed(seq, n, fillvalue=None, step=1):
     elif 0 < i < min(step, n):
         window += (fillvalue,) * i
         yield tuple(window)
-
-
-def get_selected_vertex(curve):
-    selected_points = []
-    for spline in curve.data.splines:
-        for points in windowed(spline.points, 2):
-            if points[1].select and points[0]:
-                selected_points.append(points)
-    return selected_points[-1]
 
 
 def verts_to_points(verts, location):
@@ -250,6 +258,31 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         min=0.0000001, max=1000.0,
         description="Maximum curvature error"
     )
+    contraction: FloatProperty(
+        default=0.8,
+        min=0.0001, max=1.0,
+        description="Radius reduction for recursive growth"
+    )
+    iterations: IntProperty(
+        default=64,
+        min=1, max=500,
+        description="Number of recursive iterations"
+    )
+    max_attempts: IntProperty(
+        default=128,
+        min=1, max=10000,
+        description="Maximum number of placement attempts during recursion"
+    )
+    padding: FloatProperty(
+        default=0.05,
+        min=0.0001, max=1.0,
+        description="Amount of encroaching padding for recursive growth"
+    )
+    offset: IntProperty(
+        default=25,
+        min=1, max=1000,
+        description="Number of vertices forbidden from spawning children at beginning at end of spiral"
+    )
     draw_circle: BoolProperty(
         name="Draw circle",
         default=False,
@@ -262,57 +295,9 @@ class CURVE_OT_spiramir(bpy.types.Operator):
     )
     edit_mode: BoolProperty(
         name="Show in edit mode",
-        default=True,
+        default=False,
         description="Show in edit mode"
     )
-
-    def draw_spiral(self, context):
-        origin = [0, 0, 0]
-        length_contraction = 0.8
-        tangent_angle = 0.0
-        b = self.winding_factor
-        radius = self.radius
-        direction = self.direction
-
-        if bpy.context.mode == 'EDIT_CURVE':
-            curve = context.active_object
-            selected_vertex, previous_vertex = get_selected_vertex(curve)
-            if selected_vertex:
-                origin = selected_vertex.co[0:3]
-                length = abs(selected_vertex.weight)
-                direction = invert_direction(
-                    direction_from_sign(selected_vertex.weight))
-                radius = length_contraction * spiral_radius_at_length(length, b)
-                tangent_angle = angle_between_points(
-                    previous_vertex.co, selected_vertex.co) + pi
-        else:
-            data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
-
-            curve = object_data_add(context, data_curve)  # Place in active scene
-            curve.matrix_world = get_align_matrix(context, origin)
-            curve.select_set(True)
-
-            curve.data.dimensions = '2D'
-            curve.data.use_path = True
-            curve.data.fill_mode = 'BOTH'
-
-            curve['spiramir_b'] = b
-            curve['spiramir_curvature_error'] = self.curvature_error
-            curve['spiramir_starting_angle'] = self.starting_angle
-
-        spiral, spiral_radius, spiral_mass_center = make_spiral(
-            radius, b, self.curvature_error, self.starting_angle, direction, tangent_angle)
-
-        if self.draw_circle:
-            circle = make_circle(spiral_radius, 64)
-            add_spline_to_curve(
-                curve, circle, translate(origin, spiral_mass_center))
-
-        if self.draw_tangent:
-            tangent_vector = make_vector(tangent_angle, 0.4 * radius)
-            add_spline_to_curve(curve, tangent_vector, origin)
-
-        add_spline_to_curve(curve, spiral, origin)
 
     def draw(self, context):
         layout = self.layout
@@ -327,22 +312,156 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         col.prop(self, "starting_angle", text="Starting Angle")
         col.prop(self, "curvature_error", text="Curvature Error")
 
-        col = layout.column()
+        col = layout.column(align=True)
+        col.label(text="Construction Flags:")
         col.row().prop(self, "draw_circle", expand=True)
         col.row().prop(self, "draw_tangent", expand=True)
         col.row().prop(self, "edit_mode", expand=True)
 
+        col = layout.column(align=True)
+        col.label(text="Recursion Parameters:")
+        col.prop(self, "iterations", text="Recursion Iterations")
+        col.prop(self, "max_attempts", text="Max Attempts")
+        col.prop(self, "offset", text="Growth Offset")
+        col.prop(self, "contraction", text="Growth Contraction")
+        col.prop(self, "padding", text="Encroaching Padding")
+
+    def get_splines_window(self):
+        window = 2
+        if self.draw_tangent:
+            window += 1
+        if self.draw_circle:
+            window += 1
+        return window
+
+    def get_selected_point(self, curve):
+        selected_points = []
+        for splines in windowed(curve.data.splines, self.get_splines_window()):
+            spiral = splines[0]
+            for points in windowed(spiral.points, 2):
+                if points[1].select and points[0]:
+                    selected_points.append(points)
+        if selected_points:
+            return selected_points[-1]
+
     def execute(self, context):
         time_start = time.time()
 
-        self.draw_spiral(context)
+        origin = [0, 0, 0]
+        tangent_angle = 0.0
+        radius = self.radius
+        direction = self.direction
+        vertices = []
+        splines_window = self.get_splines_window()
+        attempts = 1
+        aborted = 0
+
+        if bpy.context.mode == 'EDIT_CURVE':
+            curve = context.active_object
+            previous_point, selected_point = self.get_selected_point(curve)
+            if selected_point:
+                origin = selected_point.co[0:3]
+                length = abs(selected_point.weight)
+                direction = invert_direction(
+                    direction_from_sign(selected_point.weight))
+                tangent_angle = angle_between_points(
+                    previous_point.co, selected_point.co)
+                radius = self.contraction * \
+                    spiral_radius_at_length(length, self.winding_factor)
+        else:
+            data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
+
+            # Place in active scene
+            curve = object_data_add(context, data_curve)
+            curve.matrix_world = get_align_matrix(context, origin)
+            curve.select_set(True)
+
+            curve.data.dimensions = '2D'
+            curve.data.use_path = True
+            curve.data.fill_mode = 'BOTH'
+
+            curve['spiramir_winding_factor'] = self.winding_factor
+            curve['spiramir_curvature_error'] = self.curvature_error
+            curve['spiramir_starting_angle'] = self.starting_angle
+
+        spiral, spiral_radius, spiral_mass_center = make_spiral(
+            radius, self.winding_factor, self.curvature_error, self.starting_angle, direction, tangent_angle)
+
+        for _ in range(self.max_attempts):
+            if spiral:
+                if self.draw_circle:
+                    circle = make_circle(spiral_radius, 64)
+                    add_spline_to_curve(
+                        curve, circle, translate(origin, spiral_mass_center))
+
+                if self.draw_tangent:
+                    tangent_vector = make_vector(tangent_angle, 0.4 * radius)
+                    add_spline_to_curve(curve, tangent_vector, origin)
+
+                add_spline_to_curve(curve, spiral, origin)
+                vertices.append(max(len(spiral) - 2 * self.offset, 0))
+
+                centripetal_vector = make_centripetal_vector(
+                    spiral_mass_center)
+                add_spline_to_curve(curve, centripetal_vector, origin)
+
+                if len(vertices) >= self.iterations:
+                    break
+
+            # Random choice of mother spiral is weighted by their length
+            # proxied by the number of vertices, but we need to make sure
+            # the spline has more than 'self.offset' vertices so that we
+            # have something to pick from as contact point.
+            while True:
+                mother_spiral_index = random.choices(
+                    range(len(vertices)), vertices, k=1)[0]
+                mother_spiral = curve.data.splines[mother_spiral_index]
+                if len(mother_spiral.points) > 2 * self.offset:
+                    break
+
+            contact_point_index = random.randrange(
+                self.offset, len(mother_spiral.points) - self.offset)
+            contact_point = mother_spiral.points[contact_point_index]
+            previous_point = mother_spiral.points[contact_point_index - 1]
+
+            length = abs(contact_point.weight)
+            direction = invert_direction(
+                direction_from_sign(contact_point.weight))
+            tangent_angle = angle_between_points(
+                previous_point.co, contact_point.co)
+            radius = self.contraction * \
+                spiral_radius_at_length(length, self.winding_factor)
+
+            origin = contact_point.co[0:3]
+
+            spiral, spiral_radius, spiral_mass_center = make_spiral(
+                radius, self.winding_factor, self.curvature_error, self.starting_angle, direction, tangent_angle)
+
+            attempts += 1
+
+            absolute_spiral_mass_center = translate(origin, spiral_mass_center)
+            for splines in windowed(curve.data.splines, splines_window):
+                spiral_under_test = splines[0]
+                centripetal = splines[1]
+                if spiral_under_test != mother_spiral and len(centripetal.points) == 2:
+                    mass_center = centripetal.points[1]
+                    radius = (
+                        centripetal.points[1].co - centripetal.points[0].co).length
+                    d = distance(mass_center.co[0:3],
+                                 absolute_spiral_mass_center)
+                    min_d = (radius + spiral_radius) * (1 + self.padding)
+                    if d < min_d:
+                        aborted += 1
+                        spiral = None
+                        break
+
+        self.report({'INFO'}, "Drawing took %.4f sec. Spirals: %i, Attempts: %i, Aborted: %i" %
+                    ((time.time() - time_start), len(vertices), attempts, aborted))
 
         if self.edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
         else:
             bpy.ops.object.mode_set(mode='OBJECT')
-
-        self.report({'INFO'}, "Drawing Spiral Finished: %.4f sec" % (time.time() - time_start))
 
         return {'FINISHED'}
 
