@@ -1,7 +1,7 @@
 from collections import deque
 from itertools import chain, repeat
-import time, random
-from mathutils import Vector, Matrix
+import time, random, sys
+from mathutils import Vector, Matrix, geometry
 from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos
 
 import bpy
@@ -219,6 +219,17 @@ def add_spline_to_curve(curve, verts, location):
     new_spline.points.foreach_set('weight', length_array)
     new_spline.points.foreach_set(
         'radius', [abs(l)**(1./3) for l in length_array])
+    return new_spline
+
+
+def minimum_distance(new_spiral, existing_spiral):
+    min_distance = sys.float_info.max
+    for p in new_spiral:
+        for sp in existing_spiral.points:
+            d = (Vector(p) - sp.co).length
+            if d < min_distance:
+                min_distance = d
+    return min_distance
 
 
 class CURVE_OT_spiramir(bpy.types.Operator):
@@ -258,10 +269,15 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         min=0.0000001, max=1000.0,
         description="Maximum curvature error"
     )
-    contraction: FloatProperty(
-        default=0.8,
-        min=0.0001, max=1.0,
-        description="Radius reduction for recursive growth"
+    min_growth_ratio: FloatProperty(
+        default=0.6,
+        min=0.0, max=1.0,
+        description="Minimum growth ratio"
+    )
+    max_growth_ratio: FloatProperty(
+        default=0.95,
+        min=0.0, max=1.0,
+        description="Maximum growth ratio"
     )
     iterations: IntProperty(
         default=64,
@@ -269,14 +285,14 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         description="Number of recursive iterations"
     )
     max_attempts: IntProperty(
-        default=128,
+        default=512,
         min=1, max=10000,
         description="Maximum number of placement attempts during recursion"
     )
-    padding: FloatProperty(
-        default=0.05,
+    min_distance: FloatProperty(
+        default=0.001,
         min=0.0001, max=1.0,
-        description="Amount of encroaching padding for recursive growth"
+        description="The minimum distance between spirals"
     )
     offset: IntProperty(
         default=25,
@@ -298,6 +314,11 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         default=False,
         description="Show in edit mode"
     )
+    verbose: BoolProperty(
+        name="Verbose logging",
+        default=False,
+        description="Print verbose logging in the debug console"
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -317,14 +338,16 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         col.row().prop(self, "draw_circle", expand=True)
         col.row().prop(self, "draw_tangent", expand=True)
         col.row().prop(self, "edit_mode", expand=True)
+        col.row().prop(self, "verbose", expand=True)
 
         col = layout.column(align=True)
         col.label(text="Recursion Parameters:")
         col.prop(self, "iterations", text="Recursion Iterations")
         col.prop(self, "max_attempts", text="Max Attempts")
         col.prop(self, "offset", text="Growth Offset")
-        col.prop(self, "contraction", text="Growth Contraction")
-        col.prop(self, "padding", text="Encroaching Padding")
+        col.prop(self, "min_growth_ratio", text="Min Growth Ratio")
+        col.prop(self, "max_growth_ratio", text="Max Growth Ratio")
+        col.prop(self, "min_distance", text="Minimum Distance")
 
     def get_splines_window(self):
         window = 2
@@ -344,15 +367,25 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         if selected_points:
             return selected_points[-1]
 
+    def log(self, message, *args):
+        if self.verbose:
+            if args:
+                print(message, args)
+            else:
+                print(message)
+
     def execute(self, context):
+        self.log("\n\n=========================== Execute ==================================")
         time_start = time.time()
 
-        origin = [0, 0, 0]
+        origin = (0, 0, 0)
         tangent_angle = 0.0
         radius = self.radius
         direction = self.direction
-        vertices = []
-        splines_window = self.get_splines_window()
+        spirals = []
+        spirals_centripetals = []
+        fertile_spirals = []
+        fertile_spirals_weights = []
         attempts = 1
         aborted = 0
 
@@ -368,10 +401,17 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                     previous_point.co, selected_point.co)
                 radius = self.contraction * \
                     spiral_radius_at_length(length, self.winding_factor)
+
+                for spiral, centripetal in windowed(curve.data.splines, self.get_splines_window()):
+                    if spiral.points[0].co[4] != 0 and len(centripetal.points) == 2:
+                        spirals.append(spiral)
+                        spirals_centripetals.append(centripetal)
+                        if len(spiral.points) > 2 * self.offset:
+                            fertile_spirals.append(spiral)
+                            fertile_spirals_weights.append(len(spiral.points))
         else:
             data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
 
-            # Place in active scene
             curve = object_data_add(context, data_curve)
             curve.matrix_world = get_align_matrix(context, origin)
             curve.select_set(True)
@@ -398,41 +438,44 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                     tangent_vector = make_vector(tangent_angle, 0.4 * radius)
                     add_spline_to_curve(curve, tangent_vector, origin)
 
-                add_spline_to_curve(curve, spiral, origin)
-                vertices.append(max(len(spiral) - 2 * self.offset, 0))
+                spline = add_spline_to_curve(curve, spiral, origin)
+
+                spirals.append(spline)
 
                 centripetal_vector = make_centripetal_vector(
                     spiral_mass_center)
-                add_spline_to_curve(curve, centripetal_vector, origin)
+                centripetal_spline = add_spline_to_curve(curve, centripetal_vector, origin)
+                spirals_centripetals.append(centripetal_spline)
 
-                if len(vertices) >= self.iterations:
+                if len(spline.points) > 2 * self.offset:
+                    fertile_spirals.append(spline)
+                    fertile_spirals_weights.append(len(spline.points))
+
+                if len(spirals) >= self.iterations:
                     break
 
-            # Random choice of mother spiral is weighted by their length
-            # proxied by the number of vertices, but we need to make sure
-            # the spline has more than 'self.offset' vertices so that we
-            # have something to pick from as contact point.
-            while True:
-                mother_spiral_index = random.choices(
-                    range(len(vertices)), vertices, k=1)[0]
-                mother_spiral = curve.data.splines[mother_spiral_index]
-                if len(mother_spiral.points) > 2 * self.offset:
-                    break
+            self.log("fertile spirals: ", fertile_spirals)
+
+            mother_spiral = random.choices(
+                fertile_spirals, fertile_spirals_weights, k=1)[0]
+            self.log('mother spiral: ', mother_spiral)
 
             contact_point_index = random.randrange(
                 self.offset, len(mother_spiral.points) - self.offset)
             contact_point = mother_spiral.points[contact_point_index]
             previous_point = mother_spiral.points[contact_point_index - 1]
+            origin = contact_point.co[0:3]
+
+            self.log('contact point: ', origin, contact_point_index)
 
             length = abs(contact_point.weight)
             direction = invert_direction(
                 direction_from_sign(contact_point.weight))
             tangent_angle = angle_between_points(
                 previous_point.co, contact_point.co)
-            radius = self.contraction * \
-                spiral_radius_at_length(length, self.winding_factor)
-
-            origin = contact_point.co[0:3]
+            mother_radius = spiral_radius_at_length(
+                length, self.winding_factor)
+            radius = random.uniform(self.min_growth_ratio * mother_radius, self.max_growth_ratio * mother_radius)
 
             spiral, spiral_radius, spiral_mass_center = make_spiral(
                 radius, self.winding_factor, self.curvature_error, self.starting_angle, direction, tangent_angle)
@@ -440,28 +483,35 @@ class CURVE_OT_spiramir(bpy.types.Operator):
             attempts += 1
 
             absolute_spiral_mass_center = translate(origin, spiral_mass_center)
-            for splines in windowed(curve.data.splines, splines_window):
-                spiral_under_test = splines[0]
-                centripetal = splines[1]
-                if spiral_under_test != mother_spiral and len(centripetal.points) == 2:
+            for spiral_under_test, centripetal in zip(spirals, spirals_centripetals):
+                self.log("spiral under test: ", spiral_under_test)
+                if spiral_under_test != mother_spiral:
+                    self.log(" testing spiral!")
                     mass_center = centripetal.points[1]
-                    radius = (
-                        centripetal.points[1].co - centripetal.points[0].co).length
-                    d = distance(mass_center.co[0:3],
-                                 absolute_spiral_mass_center)
-                    min_d = (radius + spiral_radius) * (1 + self.padding)
-                    if d < min_d:
-                        aborted += 1
-                        spiral = None
-                        break
+                    radius = (centripetal.points[1].co - centripetal.points[0].co).length
+                    d = distance(mass_center.co[0:3], absolute_spiral_mass_center)
+                    if d < radius + spiral_radius:
+                        self.log(" circles intersect! testing spiral distance")
+                        min_distance = minimum_distance(spiral, spiral_under_test)
+                        if min_distance > self.min_distance:
+                            self.log("  spirals were too close, aborting!", min_distance)
+                            aborted += 1
+                            spiral = None
+                            break
+                        else:
+                            self.log("  spiral was far enough, drawing! ", min_distance)
+                    else:
+                        self.log("  spiral circle didn't intersect!")
 
         self.report({'INFO'}, "Drawing took %.4f sec. Spirals: %i, Attempts: %i, Aborted: %i" %
-                    ((time.time() - time_start), len(vertices), attempts, aborted))
+                    ((time.time() - time_start), len(spirals), attempts, aborted))
 
         if self.edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
         else:
             bpy.ops.object.mode_set(mode='OBJECT')
+
+        self.log(">>>>>>>>>>>>>>>>>>>>>>>>>>>> done <<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
 
         return {'FINISHED'}
 
