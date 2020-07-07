@@ -2,7 +2,7 @@ from collections import deque
 from itertools import chain, repeat
 import time, random, sys
 from mathutils import Vector, Matrix, geometry
-from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos
+from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos, radians
 
 import bpy
 from bpy_extras.object_utils import object_data_add
@@ -399,11 +399,10 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                     direction_from_sign(selected_point.weight))
                 tangent_angle = angle_between_points(
                     previous_point.co, selected_point.co)
-                radius = self.contraction * \
-                    spiral_radius_at_length(length, self.winding_factor)
+                radius = self.max_growth_ratio * spiral_radius_at_length(length, self.winding_factor)
 
                 for spiral, centripetal in windowed(curve.data.splines, self.get_splines_window()):
-                    if spiral.points[0].co[4] != 0 and len(centripetal.points) == 2:
+                    if len(spiral.points[0].co) == 4 and spiral.points[0].co[4] != 0 and len(centripetal.points) == 2:
                         spirals.append(spiral)
                         spirals_centripetals.append(centripetal)
                         if len(spiral.points) > 2 * self.offset:
@@ -658,9 +657,248 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# Rotation for the tangent to the normal.
+normal_rot = Matrix.Rotation(radians(90.0), 4, 'Z')
+
+
+def get_curve(name):
+    return bpy.context.scene.objects[name]
+
+
+def get_random_curve():
+    scene = bpy.context.scene
+    curves = []
+    for obj in scene.objects:
+        if obj.type == 'CURVE' and obj.visible_get():
+            curves.append(obj)
+    return random.choice(curves)
+
+
+def get_random_spline(curve):
+    return random.choice(curve.data.splines)
+
+
+def bezier_step(pt0, pt1, pt2, pt3, step=0.5):
+    if step <= 0.0:
+        return pt0.copy()
+    if step >= 1.0:
+        return pt3.copy()
+
+    u = 1.0 - step
+    tcb = step * step
+    ucb = u * u
+    tsq3u = tcb * 3.0 * u
+    usq3t = ucb * 3.0 * step
+    tcb *= step
+    ucb *= u
+
+    return pt0 * ucb + pt1 * usq3t + pt2 * tsq3u + pt3 * tcb
+
+
+def bezier_tangent(pt0, pt1, pt2, pt3, step=0.5):
+    if step <= 0.0:
+        return pt1 - pt0
+    if step >= 1.0:
+        return pt3 - pt2
+
+    u = 1.0 - step
+    ut6 = u * step * 6.0
+    tsq3 = step * step * 3.0
+    usq3 = u * u * 3.0
+
+    return (pt1 - pt0) * usq3 + (pt2 - pt1) * ut6 + (pt3 - pt2) * tsq3
+
+
+def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
+    knots_len = len(knots)
+
+    if knots_len == 1:
+        knot = knots[0]
+        point = knot.co.copy()
+        tangent = knot.handle_right - point
+        tangent.normalize()
+        normal = normal_rot @ tangent
+        return point, tangent, normal
+
+    if closed_loop:
+        scaled_t = (step % 1.0) * knots_len
+        index = int(scaled_t)
+        a = knots[index]
+        b = knots[(index + 1) % knots_len]
+    else:
+        if step <= 0.0:
+            knot = knots[0]
+            point = knot.co.copy()
+            tangent = knot.handle_right - point
+            tangent.normalize()
+            normal = normal_rot @ tangent
+            return point, tangent, normal
+        if step >= 1.0:
+            knot = knots[-1]
+            tangent = knot.handle_right - point
+            tangent.normalize()
+            normal = normal_rot @ tangent
+            return point, tangent, normal
+
+        scaled_t = step * (knots_len - 1)
+        index = int(scaled_t)
+        a = knots[index]
+        b = knots[index + 1]
+
+    pt0 = a.co
+    pt1 = a.handle_right
+    pt2 = b.handle_left
+    pt3 = b.co
+    u = scaled_t - index
+
+    # Obtain the point in local coordinates.
+    point = bezier_step(pt0, pt1, pt2, pt3, step=u)
+    # Obtain the tanget of the same step in local coordinates.
+    tangent = bezier_tangent(pt0, pt1, pt2, pt3, step=u)
+    # Normalize the tangential vector.
+    tangent.normalize()
+    # Rotate it 90' to obtain the outside normal.
+    normal = normal_rot @ tangent
+
+    # Apply the matrix transformation to the point.
+    point = matrix @ point
+    # Obtain the rotational part of the matrix.
+    rot = matrix.to_quaternion()
+    # And apply it to the tangent and normal. These are 1-unit directional vectors
+    # so we just rotate them instead of applying the full matrix, if not translation
+    # and scale can mess things up.
+    tangent = rot @ tangent
+    normal = rot @ normal
+
+    return point, tangent, normal
+
+
+def get_radius(p1, t1, n1, p2):
+    p = p2 - p1
+    x = p.dot(t1)
+    y = p.dot(n1)
+    return (x*x + y*y) / (2 * y) if y != 0.0 else 0.0
+
+
+def get_available_radius(curve, point, tangent, normal, steps=1000):
+    radius = sys.float_info.max
+    contact_point = None
+
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'CURVE' and obj.visible_get():
+            for spline in obj.data.splines:
+                if spline.type != 'BEZIER':
+                    continue
+                for i in range(steps):
+                    p, _, _ = bezier_multi_seg(spline.bezier_points, i / steps, closed_loop=True, matrix=obj.matrix_world)
+                    r = get_radius(point, tangent, normal, p)
+                    if r > 0.0 and r < radius:
+                        radius = r
+                        contact_point = p
+
+    if radius != sys.float_info.max:
+        return radius, contact_point
+    else:
+        None, None
+
+
+class CURVE_OT_spiramir_circles(bpy.types.Operator):
+    bl_idname = "curve.spiramir_circles"
+    bl_label = "Spiramir Circles"
+    bl_description = "Enclose with circles"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    iterations: IntProperty(
+        default=1,
+        min=1, max=500,
+        description="Number of circles to inscribe"
+    )
+
+    max_attempts: IntProperty(
+        default=100,
+        min=1, max=10000,
+        description="Maximum number of attempts before giving up"
+    )
+
+    min_radius: FloatProperty(
+        default=0.1,
+        min=0.0, max=1000.0,
+        description="Smallest radius allowed for embedded circles"
+    )
+
+    max_radius: FloatProperty(
+        default=0.7,
+        min=0.0, max=1000.0,
+        description="Biggest radius allowed for embedded circles"
+    )
+
+    bevel_depth: FloatProperty(
+        default=0.02,
+        min=0.0, max=1000.0,
+        description="Bevel depth for the embedded circles"
+    )
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        col.prop(self, "iterations", text="Iterations")
+        col.prop(self, "max_attempts", text="Max Attempts")
+        col.prop(self, "min_radius", text="Min Radius")
+        col.prop(self, "max_radius", text="Max Radius")
+        col.prop(self, "bevel_depth", text="Bevel Depth")
+
+    def inscribe_circle(self):
+        curve = get_random_curve()
+        spline = get_random_spline(curve)
+        step = random.uniform(0.0, 1.0)
+
+        p, t, n = bezier_multi_seg(spline.bezier_points, step, closed_loop=True, matrix=curve.matrix_world)
+        r, cp = get_available_radius(curve, p, t, n)
+
+        if r > self.min_radius:
+            r = min(r, self.max_radius)
+
+            bpy.ops.object.empty_add(type='ARROWS', location=p)
+            empty = bpy.context.object
+            empty.rotation_mode = 'QUATERNION'
+            empty.rotation_quaternion = t.to_track_quat('X', 'Z')
+
+            bpy.ops.curve.primitive_bezier_circle_add(radius=r, location=(0, r, 0))
+            circle = bpy.context.object
+            circle.parent = empty
+            circle.data.bevel_depth = self.bevel_depth
+
+            bpy.ops.object.empty_add(type='SINGLE_ARROW', location=cp)
+            return True
+        else:
+            return False
+
+    def execute(self, context):
+        print('>>>>>>>>>> start >>>>>>>>>>>>>>>>')
+        time_start = time.time()
+
+        drawn = 0
+        for _ in range(self.max_attempts):
+            if self.inscribe_circle():
+                print('[*] Successful inscription.')
+                drawn += 1
+                if drawn == self.iterations:
+                    break
+            else:
+                print('[ ] Failed inscription.')
+
+        self.report({'INFO'}, "Drawn %d circles in %.4f sec" % (drawn, time.time() - time_start))
+
+        print('<<<<<<<<<<<<<<< end <<<<<<<<<<<<<<')
+
+        return {'FINISHED'}
+
+
 def menu_func(self, context):
     self.layout.operator(CURVE_OT_spiramir.bl_idname)
     self.layout.operator(CURVE_OT_spiramir_sprues.bl_idname)
+    self.layout.operator(CURVE_OT_spiramir_circles.bl_idname)
 
 
 addon_keymaps = []
@@ -668,6 +906,7 @@ addon_keymaps = []
 def register():
     bpy.utils.register_class(CURVE_OT_spiramir)
     bpy.utils.register_class(CURVE_OT_spiramir_sprues)
+    bpy.utils.register_class(CURVE_OT_spiramir_circles)
     bpy.types.VIEW3D_MT_curve_add.append(menu_func)
 
     wm = bpy.context.window_manager
@@ -677,10 +916,13 @@ def register():
     kmi1 = km.keymap_items.new(
         CURVE_OT_spiramir.bl_idname, 'S', 'PRESS', ctrl=True, shift=True)
     kmi2 = km.keymap_items.new(
-        CURVE_OT_spiramir_sprues.bl_idname, 'T', 'PRESS', ctrl=True, shift=True)
+        CURVE_OT_spiramir_sprues.bl_idname, 'R', 'PRESS', ctrl=True, shift=True)
+    kmi3 = km.keymap_items.new(
+        CURVE_OT_spiramir_circles.bl_idname, 'C', 'PRESS', ctrl=True, shift=True)
 
     addon_keymaps.append((km, kmi1))
     addon_keymaps.append((km, kmi2))
+    addon_keymaps.append((km, kmi3))
 
 
 def unregister():
@@ -688,6 +930,7 @@ def unregister():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
 
+    bpy.utils.unregister_class(CURVE_OT_spiramir_circles)
     bpy.utils.unregister_class(CURVE_OT_spiramir_sprues)
     bpy.utils.unregister_class(CURVE_OT_spiramir)
     bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
