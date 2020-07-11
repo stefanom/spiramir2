@@ -172,15 +172,7 @@ def get_align_matrix(context, location):
         rot = context.space_data.region_3d.view_matrix.to_3x3().inverted().to_4x4()
     else:
         rot = Matrix()
-    align_matrix = loc @ rot
-    return align_matrix
-
-
-def get_mass_center(points):
-    mass_center = (0, 0, 0)
-    for point in points:
-        mass_center = translate(mass_center, point.co[0:3])
-    return (mass_center[0] / len(points), mass_center[1] / len(points), 0)
+    return loc @ rot
 
 
 def windowed(seq, n, fillvalue=None, step=1):
@@ -230,6 +222,152 @@ def minimum_distance(new_spiral, existing_spiral):
             if d < min_distance:
                 min_distance = d
     return min_distance
+
+
+# Rotation for the tangent to the normal.
+normal_rot = Matrix.Rotation(radians(90.0), 4, 'Z')
+
+
+def get_curve(name):
+    return bpy.context.scene.objects[name]
+
+
+def get_random_curve():
+    scene = bpy.context.scene
+    curves = []
+    for obj in scene.objects:
+        if obj.type == 'CURVE' and obj.visible_get():
+            curves.append(obj)
+    return random.choice(curves)
+
+
+def get_random_spline(curve):
+    return random.choice(curve.data.splines)
+
+
+def bezier_step(pt0, pt1, pt2, pt3, step=0.5):
+    if step <= 0.0:
+        return pt0.copy()
+    if step >= 1.0:
+        return pt3.copy()
+
+    u = 1.0 - step
+    tcb = step * step
+    ucb = u * u
+    tsq3u = tcb * 3.0 * u
+    usq3t = ucb * 3.0 * step
+    tcb *= step
+    ucb *= u
+
+    return pt0 * ucb + pt1 * usq3t + pt2 * tsq3u + pt3 * tcb
+
+
+def bezier_tangent(pt0, pt1, pt2, pt3, step=0.5):
+    if step <= 0.0:
+        return pt1 - pt0
+    if step >= 1.0:
+        return pt3 - pt2
+
+    u = 1.0 - step
+    ut6 = u * step * 6.0
+    tsq3 = step * step * 3.0
+    usq3 = u * u * 3.0
+
+    return (pt1 - pt0) * usq3 + (pt2 - pt1) * ut6 + (pt3 - pt2) * tsq3
+
+
+def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
+    knots_len = len(knots)
+
+    if knots_len == 1:
+        knot = knots[0]
+        point = knot.co.copy()
+        tangent = knot.handle_right - point
+        tangent.normalize()
+        normal = normal_rot @ tangent
+        return point, tangent, normal
+
+    if closed_loop:
+        scaled_t = (step % 1.0) * knots_len
+        index = int(scaled_t)
+        a = knots[index]
+        b = knots[(index + 1) % knots_len]
+    else:
+        if step <= 0.0:
+            knot = knots[0]
+            point = knot.co.copy()
+            tangent = knot.handle_right - point
+            tangent.normalize()
+            normal = normal_rot @ tangent
+            return point, tangent, normal
+        if step >= 1.0:
+            knot = knots[-1]
+            tangent = knot.handle_right - point
+            tangent.normalize()
+            normal = normal_rot @ tangent
+            return point, tangent, normal
+
+        scaled_t = step * (knots_len - 1)
+        index = int(scaled_t)
+        a = knots[index]
+        b = knots[index + 1]
+
+    pt0 = a.co
+    pt1 = a.handle_right
+    pt2 = b.handle_left
+    pt3 = b.co
+    u = scaled_t - index
+
+    # Obtain the point in local coordinates.
+    point = bezier_step(pt0, pt1, pt2, pt3, step=u)
+    # Obtain the tanget of the same step in local coordinates.
+    tangent = bezier_tangent(pt0, pt1, pt2, pt3, step=u)
+    # Normalize the tangential vector.
+    tangent.normalize()
+    # Rotate it 90' to obtain the outside normal.
+    normal = normal_rot @ tangent
+
+    # Apply the matrix transformation to the point.
+    point = matrix @ point
+    # Obtain the rotational part of the matrix.
+    rot = matrix.to_quaternion()
+    # And apply it to the tangent and normal. These are 1-unit directional vectors
+    # so we just rotate them instead of applying the full matrix, if not translation
+    # and scale can mess things up.
+    tangent = rot @ tangent
+    normal = rot @ normal
+
+    return point, tangent, normal
+
+
+def get_radius(p1, t1, n1, p2):
+    p = p2 - p1
+    x = p.dot(t1)
+    y = p.dot(n1)
+    return (x*x + y*y) / (2 * y) if y != 0.0 else 0.0
+
+
+def get_available_radius(curve, point, tangent, normal, steps=1000):
+    radius = sys.float_info.max
+    contact_point = None
+
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'CURVE' and obj.visible_get():
+            for spline in obj.data.splines:
+                if spline.type != 'BEZIER':
+                    continue
+                for i in range(steps):
+                    p, _, _ = bezier_multi_seg(
+                        spline.bezier_points, i / steps, closed_loop=True, matrix=obj.matrix_world)
+                    r = get_radius(point, tangent, normal, p)
+                    if r > 0.0 and r < radius:
+                        radius = r
+                        contact_point = p
+
+    if radius != sys.float_info.max:
+        return radius, contact_point
+    else:
+        None, None
 
 
 class CURVE_OT_spiramir(bpy.types.Operator):
@@ -515,12 +653,228 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CURVE_PT_spiramir2(bpy.types.Panel):
+    bl_idname = "CURVE_PT_spiramir2"
+    bl_label = "Spiramir Grower"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Create"
+
+    def draw(self, context):
+        parent_curve = context.active_object
+        # If the selected object is a spiramir, the props defaults
+        # should change to align with growth coming from that parent.
+        if parent_curve and 'spiramir_direction' in parent_curve:
+            props = self.layout.operator('curve.spiramir2')
+            props.position = 0.5
+            props.radius = parent_curve['spiramir_radius'] * 0.9
+            props.direction = invert_direction(parent_curve['spiramir_direction'])
+            props.winding_factor = parent_curve['spiramir_winding_factor']
+            props.curvature_error = parent_curve['spiramir_curvature_error']
+            props.starting_angle = parent_curve['spiramir_starting_angle']
+
+
+class CURVE_OT_spiramir2(bpy.types.Operator):
+    bl_idname = "curve.spiramir2"
+    bl_label = "Add Spiramir"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    direction: EnumProperty(
+        items=[('COUNTER_CLOCKWISE', "Counter Clockwise",
+                "Wind in a counter clockwise direction"),
+               ("CLOCKWISE", "Clockwise",
+                "Wind in a clockwise direction")],
+        default='COUNTER_CLOCKWISE',
+        name="Direction",
+        description="Direction of winding"
+    )
+    position: FloatProperty(
+        default=0.0,
+        min=0.0, max=1.0,
+        description="Relative position of the growth point"
+    )
+    radius: FloatProperty(
+        default=1.0,
+        min=0.00001, max=1000.0,
+        description="Radius of the spiral"
+    )
+    winding_factor: FloatProperty(
+        default=0.2,
+        min=0.0001, max=2,
+        description="Spiral Winding Factor"
+    )
+    starting_angle: FloatProperty(
+        default=-20.0,
+        min=-100.0, max=100.0,
+        description="Angle to start drawing the spiral"
+    )
+    curvature_error: FloatProperty(
+        default=0.001,
+        min=0.0000001, max=1000.0,
+        description="Maximum curvature error"
+    )
+    tube_radius: FloatProperty(
+        default=0.0,
+        min=0.0, max=1000.0,
+        description="Radius of the tube around the curve"
+    )
+    draw_circle: BoolProperty(
+        name="Draw circle",
+        default=False,
+        description="Draw the occupancy circle"
+    )
+    verbose: BoolProperty(
+        name="Verbose logging",
+        default=False,
+        description="Print verbose logging in the debug console"
+    )
+
+    def log(self, message, *args):
+        if self.verbose:
+            if args:
+                print(message, args)
+            else:
+                print(message)
+
+    def direction_sign(self, direction):
+        return 1 if direction == 'CLOCKWISE' else -1
+
+    def spiral_cartesian(self, t, b, direction):
+        sign = self.direction_sign(direction)
+        r = exp(b * t)
+        return Vector((r * cos(t), sign * r * sin(t), 0, 0))
+
+    def make_spiral(self):
+        verts = []
+
+        sign = direction_sign(self.direction)
+        t = log(self.radius) / self.winding_factor
+        length = spiral_length_at_angle(t, self.winding_factor)
+        rot = atan(1 / self.winding_factor)
+        rotation = Matrix.Rotation(-sign * (t + rot + pi), 4, 'Z')
+        end = self.spiral_cartesian(t, self.winding_factor, self.direction)
+        angle = self.starting_angle
+
+        diameter = 0
+        mass_center = Vector((0,0,0))
+
+        while True:
+            l = spiral_length_at_angle(angle, self.winding_factor)
+            if l >= length:
+                break
+            p = self.spiral_cartesian(angle, self.winding_factor, self.direction) - end
+            p[3] = l
+            p = rotation @ p
+            verts.append(p)
+            d = p.length
+            if d > diameter:
+                diameter = d
+                mass_center = p / 2
+            angle += angle_increment(angle, self.winding_factor, self.curvature_error)
+
+        verts.append(Vector((0, 0, 0, length)))
+
+        return verts[::-1], diameter / 2, mass_center
+
+    def verts_to_points(self, verts):
+        vert_array = []
+        length_array = []
+        for v in verts:
+            vert_array.extend(v[0:3])
+            vert_array.append(0.0)
+            length_array.append(v[3])
+        return vert_array, length_array
+
+    def add_spline_to_curve(self, curve, verts):
+        verts_array, lengths_array = self.verts_to_points(verts)
+
+        new_spline = curve.data.splines.new(type='POLY')
+        new_spline.points.add(int(len(verts_array) / 4 - 1))
+        new_spline.points.foreach_set('co', verts_array)
+        new_spline.points.foreach_set('weight', lengths_array)
+        new_spline.points.foreach_set('radius', [abs(l)**(1./3) for l in lengths_array])
+        return new_spline
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT'
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column_flow(align=True)
+
+        col.prop(self, "direction")
+
+        col = layout.column(align=True)
+        col.prop(self, "radius", text="Radius")
+        col.prop(self, "position", text="Relative Position")
+        col.prop(self, "winding_factor", text="Winding Factor")
+        col.prop(self, "starting_angle", text="Starting Angle")
+        col.prop(self, "curvature_error", text="Curvature Error")
+        col.prop(self, "tube_radius", text="Tube Radius")
+        col.row().prop(self, "draw_circle", expand=True)
+        col.row().prop(self, "verbose", expand=True)
+
+    def execute(self, context):
+        self.log("\n\n=========================== Execute ==================================")
+        time_start = time.time()
+
+        parent_curve = context.object
+        if parent_curve and (parent_curve.type != 'CURVE' or not parent_curve.select_get()):
+            parent_curve = None
+
+        origin = Vector((0, 0, 0))
+        bpy.ops.object.empty_add(type='ARROWS', location=origin)
+        empty = context.object
+
+        if parent_curve:
+            constraint = empty.constraints.new('FOLLOW_PATH')
+            constraint.target = parent_curve
+            constraint.offset_factor = self.position
+            constraint.use_curve_follow = True
+            constraint.use_fixed_location = True
+            constraint.forward_axis = 'FORWARD_X'
+            constraint.up_axis = 'UP_Z'
+
+            if not parent_curve.data.animation_data:
+                override = {'constraint': constraint}
+                bpy.ops.constraint.followpath_path_animate(override, constraint='Follow Path')            
+
+        data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
+        data_curve.dimensions = '2D'
+        data_curve.bevel_depth = self.tube_radius
+
+        curve = object_data_add(context, data_curve)
+
+        curve['spiramir'] = True
+        curve['spiramir_radius'] = self.radius
+        curve['spiramir_direction'] = self.direction
+        curve['spiramir_winding_factor'] = self.winding_factor
+        curve['spiramir_curvature_error'] = self.curvature_error
+        curve['spiramir_starting_angle'] = self.starting_angle
+
+        curve.parent = empty
+
+        spiral, _, _ = self.make_spiral()
+
+        self.add_spline_to_curve(curve, spiral)
+
+        #self.report({'INFO'}, "Drawing took %.4f sec." % (time.time() - time_start))
+
+        context.view_layer.update()
+
+        self.log(">>>>>>>>>>>>>>>>>>>>>>>>>>>> done <<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+
+        return {'FINISHED'}
+
+
 class CURVE_OT_spiramir_sprues(bpy.types.Operator):
     bl_idname = "curve.spiramir_sprues"
     bl_label = "Spiramir Sprues"
     bl_description = "Create sprues for a spiramir"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_category = "Create"
     bl_options = {'REGISTER', 'UNDO'}
 
     distance: FloatProperty(
@@ -561,7 +915,7 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
 
         for point in spline.points:
             length = abs(point.weight)
-            travel += length - previous_length
+            travel += abs(length - previous_length)
             previous_length = length
             if first and travel > self.offset:
                 contacts.append(point)
@@ -573,54 +927,37 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
 
         return contacts
 
-    def draw_sprue(self, curve, contact, contact_radius, mass_center):
-        sprue = curve.data.splines.new(type='BEZIER')
-        sprue.bezier_points.add(1)
-        points = sprue.bezier_points
+    def draw_sprue(self, context, contact, contact_radius, mass_center):
+        data_curve = bpy.data.curves.new(name='Sprue', type='CURVE')
+        sprue = object_data_add(context, data_curve)
+
+        sprue.data.dimensions = '3D'
+        sprue.data.resolution_u = 32
+        sprue.data.use_path = True
+        sprue.data.fill_mode = 'FULL'
+
+        sprue['spiramir_sprues'] = True
+
+        spline = sprue.data.splines.new(type='BEZIER')
+        spline.bezier_points.add(1)
+        points = spline.bezier_points
 
         points[0].co = contact
         points[0].radius = contact_radius
-        points[0].handle_right = translate(
-            contact, (0, 0, self.curvature * self.height))
+        points[0].handle_right = contact + Vector((0, 0, self.curvature * self.height))
         points[0].handle_right_type = 'FREE'
         points[0].handle_left = contact
         points[0].handle_left_type = 'FREE'
 
-        top = translate(mass_center, (0, 0, self.height))
+        top = mass_center + Vector((0, 0, self.height))
         points[1].co = top
         points[1].radius = self.radius
-        points[1].handle_left = translate(
-            top, (0, 0, - self.curvature * self.height))
+        points[1].handle_left = top - Vector((0, 0, self.curvature * self.height))
         points[1].handle_left_type = 'FREE'
         points[1].handle_right = top
         points[1].handle_right_type = 'FREE'
 
-    def draw_sprues(self, spiramir, context):
-        origin = [0, 0, 0]
-        data_curve = bpy.data.curves.new(name='Sprues', type='CURVE')
-
-        curve = object_data_add(context, data_curve)  # Place in active scene
-        curve.matrix_world = get_align_matrix(context, origin)
-        curve.select_set(True)
-
-        curve.data.dimensions = '3D'
-        curve.data.resolution_u = 32
-        curve.data.use_path = True
-        curve.data.fill_mode = 'FULL'
-
-        curve['spiramir_sprues'] = True
-
-        contact_points = []
-
-        for spline in spiramir.data.splines:
-            if spline.points[0].weight != 0:
-                contact_points.extend(
-                    self.get_contact_points_for_spline(spline))
-
-        mass_center = get_mass_center(contact_points)
-
-        for point in contact_points:
-            self.draw_sprue(curve, point.co[0:3], point.radius, mass_center)
+        return sprue
 
     def draw(self, context):
         col = self.layout.column(align=True)
@@ -630,176 +967,34 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
         col.prop(self, "radius", text="Radius")
         col.prop(self, "curvature", text="Curvature")
 
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT'
+
     def execute(self, context):
-        curve = context.active_object
-
-        if not curve:
-            self.report({'ERROR'}, "Drawing Spiramir sprues requires an object to be selected.")
-            return {'FINISHED'}
-
-        if not 'spiramir_b' in curve:
-            self.report({'ERROR'}, "Drawing Spiramir sprues requires a spiramir to be selected.")
-            return {'FINISHED'}
-
-        if curve.mode != 'OBJECT':
-            self.report({'ERROR'}, "Drawing Spiramir sprues requires to be in object mode.")
-            return {'FINISHED'}
-
-        self.report({'INFO'}, "Drawing sprues for spiramir: {}".format(curve))
-
         time_start = time.time()
 
-        self.draw_sprues(curve, context)
+        contacts = []
+        mass_center = Vector((0, 0, 0))
 
-        self.report({'INFO'}, "Drawing Sprues Finished: %.4f sec" %
-                    (time.time() - time_start))
+        for o in context.view_layer.objects:
+            if o.select_get() and 'spiramir' in o and o['spiramir']:
+                for spline in o.data.splines:
+                    for point in self.get_contact_points_for_spline(spline):
+                        contact_point = o.matrix_world @ point.co.to_3d()
+                        contacts.append((contact_point, point.radius))
+                        mass_center += contact_point
+
+        if contacts:
+            mass_center /= len(contacts)
+
+        for contact_point, contact_radius in contacts:
+            self.draw_sprue(context, contact_point, contact_radius, mass_center)
+
+        # self.report({'INFO'}, "Drawing Sprues Finished: %.4f sec" %
+        #             (time.time() - time_start))
 
         return {'FINISHED'}
-
-
-# Rotation for the tangent to the normal.
-normal_rot = Matrix.Rotation(radians(90.0), 4, 'Z')
-
-
-def get_curve(name):
-    return bpy.context.scene.objects[name]
-
-
-def get_random_curve():
-    scene = bpy.context.scene
-    curves = []
-    for obj in scene.objects:
-        if obj.type == 'CURVE' and obj.visible_get():
-            curves.append(obj)
-    return random.choice(curves)
-
-
-def get_random_spline(curve):
-    return random.choice(curve.data.splines)
-
-
-def bezier_step(pt0, pt1, pt2, pt3, step=0.5):
-    if step <= 0.0:
-        return pt0.copy()
-    if step >= 1.0:
-        return pt3.copy()
-
-    u = 1.0 - step
-    tcb = step * step
-    ucb = u * u
-    tsq3u = tcb * 3.0 * u
-    usq3t = ucb * 3.0 * step
-    tcb *= step
-    ucb *= u
-
-    return pt0 * ucb + pt1 * usq3t + pt2 * tsq3u + pt3 * tcb
-
-
-def bezier_tangent(pt0, pt1, pt2, pt3, step=0.5):
-    if step <= 0.0:
-        return pt1 - pt0
-    if step >= 1.0:
-        return pt3 - pt2
-
-    u = 1.0 - step
-    ut6 = u * step * 6.0
-    tsq3 = step * step * 3.0
-    usq3 = u * u * 3.0
-
-    return (pt1 - pt0) * usq3 + (pt2 - pt1) * ut6 + (pt3 - pt2) * tsq3
-
-
-def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
-    knots_len = len(knots)
-
-    if knots_len == 1:
-        knot = knots[0]
-        point = knot.co.copy()
-        tangent = knot.handle_right - point
-        tangent.normalize()
-        normal = normal_rot @ tangent
-        return point, tangent, normal
-
-    if closed_loop:
-        scaled_t = (step % 1.0) * knots_len
-        index = int(scaled_t)
-        a = knots[index]
-        b = knots[(index + 1) % knots_len]
-    else:
-        if step <= 0.0:
-            knot = knots[0]
-            point = knot.co.copy()
-            tangent = knot.handle_right - point
-            tangent.normalize()
-            normal = normal_rot @ tangent
-            return point, tangent, normal
-        if step >= 1.0:
-            knot = knots[-1]
-            tangent = knot.handle_right - point
-            tangent.normalize()
-            normal = normal_rot @ tangent
-            return point, tangent, normal
-
-        scaled_t = step * (knots_len - 1)
-        index = int(scaled_t)
-        a = knots[index]
-        b = knots[index + 1]
-
-    pt0 = a.co
-    pt1 = a.handle_right
-    pt2 = b.handle_left
-    pt3 = b.co
-    u = scaled_t - index
-
-    # Obtain the point in local coordinates.
-    point = bezier_step(pt0, pt1, pt2, pt3, step=u)
-    # Obtain the tanget of the same step in local coordinates.
-    tangent = bezier_tangent(pt0, pt1, pt2, pt3, step=u)
-    # Normalize the tangential vector.
-    tangent.normalize()
-    # Rotate it 90' to obtain the outside normal.
-    normal = normal_rot @ tangent
-
-    # Apply the matrix transformation to the point.
-    point = matrix @ point
-    # Obtain the rotational part of the matrix.
-    rot = matrix.to_quaternion()
-    # And apply it to the tangent and normal. These are 1-unit directional vectors
-    # so we just rotate them instead of applying the full matrix, if not translation
-    # and scale can mess things up.
-    tangent = rot @ tangent
-    normal = rot @ normal
-
-    return point, tangent, normal
-
-
-def get_radius(p1, t1, n1, p2):
-    p = p2 - p1
-    x = p.dot(t1)
-    y = p.dot(n1)
-    return (x*x + y*y) / (2 * y) if y != 0.0 else 0.0
-
-
-def get_available_radius(curve, point, tangent, normal, steps=1000):
-    radius = sys.float_info.max
-    contact_point = None
-
-    for obj in bpy.context.scene.objects:
-        if obj.type == 'CURVE' and obj.visible_get():
-            for spline in obj.data.splines:
-                if spline.type != 'BEZIER':
-                    continue
-                for i in range(steps):
-                    p, _, _ = bezier_multi_seg(spline.bezier_points, i / steps, closed_loop=True, matrix=obj.matrix_world)
-                    r = get_radius(point, tangent, normal, p)
-                    if r > 0.0 and r < radius:
-                        radius = r
-                        contact_point = p
-
-    if radius != sys.float_info.max:
-        return radius, contact_point
-    else:
-        None, None
 
 
 class CURVE_OT_spiramir_circles(bpy.types.Operator):
@@ -853,6 +1048,9 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
         spline = get_random_spline(curve)
         step = random.uniform(0.0, 1.0)
 
+        if not spline.bezier_points:
+            return False
+
         p, t, n = bezier_multi_seg(spline.bezier_points, step, closed_loop=True, matrix=curve.matrix_world)
         r, cp = get_available_radius(curve, p, t, n)
 
@@ -888,7 +1086,7 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
             else:
                 print('[ ] Failed inscription.')
 
-        self.report({'INFO'}, "Drawn %d circles in %.4f sec" % (drawn, time.time() - time_start))
+        #self.report({'INFO'}, "Drawn %d circles in %.4f sec" % (drawn, time.time() - time_start))
 
         print('<<<<<<<<<<<<<<< end <<<<<<<<<<<<<<')
 
@@ -905,6 +1103,8 @@ addon_keymaps = []
 
 def register():
     bpy.utils.register_class(CURVE_OT_spiramir)
+    bpy.utils.register_class(CURVE_PT_spiramir2)
+    bpy.utils.register_class(CURVE_OT_spiramir2)
     bpy.utils.register_class(CURVE_OT_spiramir_sprues)
     bpy.utils.register_class(CURVE_OT_spiramir_circles)
     bpy.types.VIEW3D_MT_curve_add.append(menu_func)
@@ -932,5 +1132,25 @@ def unregister():
 
     bpy.utils.unregister_class(CURVE_OT_spiramir_circles)
     bpy.utils.unregister_class(CURVE_OT_spiramir_sprues)
+    bpy.utils.unregister_class(CURVE_OT_spiramir2)
+    bpy.utils.unregister_class(CURVE_PT_spiramir2)
     bpy.utils.unregister_class(CURVE_OT_spiramir)
     bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
+
+
+# =========================== attic ====================================
+
+            # if len(curve.data.splines) == 1:
+            #     spline = curve.data.splines[0]
+            #     if spline.type == 'BEZIER':
+            #         origin, tangent, _ = bezier_multi_seg(spline.bezier_points, self.position, closed_loop=True, matrix=curve.matrix_world)
+            #     elif spline.type == 'POLY':
+            #         points = len(spline.points)
+            #         i = round(self.position * points)
+            #         origin = curve.matrix_world @ Vector(spline.points[i].co[0:3])
+            #         tangent = curve.matrix_world @ Vector(spline.points[i + 1 % points].co[0:3]) - origin
+
+        
+        #empty.rotation_mode = 'QUATERNION'
+        #empty.rotation_quaternion = tangent.to_track_quat('X', 'Z')
+
