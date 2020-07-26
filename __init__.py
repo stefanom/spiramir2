@@ -18,6 +18,15 @@ from . import sprues
 from . import spiramir
 from . import utils
 
+classes = [
+    spiramir.CURVE_PT_spiramir,
+    spiramir.CURVE_OT_spiramir,
+    sprues.CURVE_OT_spiramir_sprues,
+    circles.CURVE_OT_spiramir_circles,
+]
+
+addon_keymaps = []
+
 
 def menu_func(self, context):
     self.layout.operator(spiramir.CURVE_OT_spiramir.bl_idname)
@@ -25,14 +34,10 @@ def menu_func(self, context):
     self.layout.operator(circles.CURVE_OT_spiramir_circles.bl_idname)
 
 
-addon_keymaps = []
-
 def register():
-    bpy.utils.register_class(spiramir.CURVE_OT_spiramir)
-    bpy.utils.register_class(spiramir.CURVE_PT_spiramir2)
-    bpy.utils.register_class(spiramir.CURVE_OT_spiramir2)
-    bpy.utils.register_class(sprues.CURVE_OT_spiramir_sprues)
-    bpy.utils.register_class(circles.CURVE_OT_spiramir_circles)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
     bpy.types.VIEW3D_MT_curve_add.append(menu_func)
 
     wm = bpy.context.window_manager
@@ -56,11 +61,9 @@ def unregister():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
 
-    bpy.utils.unregister_class(circles.CURVE_OT_spiramir_circles)
-    bpy.utils.unregister_class(sprues.CURVE_OT_spiramir_sprues)
-    bpy.utils.unregister_class(spiramir.CURVE_OT_spiramir2)
-    bpy.utils.unregister_class(spiramir.CURVE_PT_spiramir2)
-    bpy.utils.unregister_class(spiramir.CURVE_OT_spiramir)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+
     bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
 
 

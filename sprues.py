@@ -1,5 +1,3 @@
-import time
-
 import bpy
 from bpy_extras.object_utils import object_data_add
 from mathutils import Vector
@@ -110,8 +108,6 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
         return context.mode == 'OBJECT'
 
     def execute(self, context):
-        # time_start = time.time()
-
         contacts = []
         mass_center = Vector((0, 0, 0))
 
@@ -129,8 +125,5 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
         for contact_point, contact_radius in contacts:
             self.draw_sprue(context, contact_point,
                             contact_radius, mass_center)
-
-        # self.report({'INFO'}, "Drawing Sprues Finished: %.4f sec" %
-        #             (time.time() - time_start))
 
         return {'FINISHED'}

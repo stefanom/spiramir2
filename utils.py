@@ -1,148 +1,13 @@
 from collections import deque
 from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos, radians
 from itertools import chain, repeat
-import random, sys
+import random
+import sys
 
 import bpy
 from mathutils import Vector, Matrix
 
-
-def translate(p, t):
-    if len(p) == 3 and len(t) == 3:
-        return (p[0] + t[0], p[1] + t[1], p[2] + t[2])
-    else:
-        return (p[0] + t[0], p[1] + t[1])
-
-
-def to_4d(v):
-    if type(v) in [list, tuple]:
-        if len(v) == 1:
-            return (v[0], 0, 0, 0)
-        if len(v) == 2:
-            return (v[0], v[1], 0, 0)
-        if len(v) == 3:
-            return (v[0], v[1], v[2], 0)
-        return v
-    else:
-        return (v, 0, 0, 0)
-
-
-def rotate(p, angle):
-    cosA = cos(angle)
-    sinA = sin(angle)
-    return (p[0] * cosA - p[1] * sinA, p[0] * sinA + p[1] * cosA)
-
-
-def direction_sign(direction):
-    return 1 if direction == 'CLOCKWISE' else -1
-
-
-def direction_from_sign(value):
-    return 'CLOCKWISE' if value >= 0.0 else 'COUNTER_CLOCKWISE'
-
-
-def invert_direction(direction):
-    if direction == 'CLOCKWISE':
-        return 'COUNTER_CLOCKWISE'
-    else:
-        return 'CLOCKWISE'
-
-
-def cartesian(t, r, direction='CLOCKWISE'):
-    sign = direction_sign(direction)
-    return (r * cos(t), sign * r * sin(t))
-
-
-def spiral_polar(t, b):
-    return exp(b * t)
-
-
-def spiral_cartesian(t, b, direction='CLOCKWISE'):
-    return cartesian(t, spiral_polar(b, t), direction)
-
-
-def spiral_length_at_angle(t, b):
-    return sqrt(1 + b*b) * exp(b * t) / b
-
-
-def spiral_angle_at_length(l, b):
-    return log(l * b / sqrt(1 + b*b)) / b
-
-
-def spiral_radius_at_length(l, b):
-    return l * b / sqrt(1 + b*b)
-
-
-def obsculating_circle_radius_at_angle(t, b):
-    return b * spiral_length_at_angle(t, b)
-
-
-def angle_increment(t, b, curvature_error):
-    r = obsculating_circle_radius_at_angle(t, b)
-    return acos(r / (r + curvature_error))
-
-
-def distance(a, b):
-    return sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
-
-
-def between(a, b):
-    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-
-
-def angle_between_points(a, b):
-    return atan2(a[1] - b[1], a[0] - b[0])
-
-
-def make_spiral(radius, b, curvature_error, starting_angle, direction, rotation):
-    verts = []
-
-    t = log(radius) / b
-    length = spiral_length_at_angle(t, b)
-    rot = atan(1 / b)
-    diameter = 0
-    mass_center = (0, 0)
-    sign = direction_sign(direction)
-    end = spiral_cartesian(t, b, direction)
-
-    angle = starting_angle
-
-    while True:
-        l = spiral_length_at_angle(angle, b)
-        if l >= length:
-            break
-        p = spiral_cartesian(angle, b, direction)
-        p = translate(p, (-end[0], -end[1]))
-        p = rotate(p, rotation - sign * (t + rot + pi))
-        verts.append((p[0], p[1], 0, sign * l))
-        d = distance((0, 0), p)
-        if d > diameter:
-            diameter = d
-            mass_center = between((0, 0), p)
-        angle += angle_increment(angle, b, curvature_error)
-
-    verts.append((0, 0, 0, sign * length))
-
-    return verts, diameter / 2, (mass_center[0], mass_center[1], 0)
-
-
-def make_vector(angle, radius):
-    v = cartesian(angle, radius)
-    return [(0, 0, 0, 0), to_4d(v)]
-
-
-def make_centripetal_vector(center):
-    return [(0, 0, 0, 0), to_4d(center)]
-
-
-def make_circle(radius, segments):
-    verts = []
-    angle = 2 * pi / segments
-    for i in range(segments):
-        p = cartesian(angle * i, radius)
-        verts.append(to_4d(p))
-    verts.append(to_4d(radius))
-    return verts
+# -------------------------- good ------------------------
 
 
 def get_align_matrix(context, location):
@@ -155,42 +20,96 @@ def get_align_matrix(context, location):
     return loc @ rot
 
 
-def windowed(seq, n, fillvalue=None, step=1):
-    window = deque(maxlen=n)
-    i = n
-    for _ in map(window.append, seq):
-        i -= 1
-        if not i:
-            i = step
-            yield tuple(window)
-
-    size = len(window)
-    if size < n:
-        yield tuple(chain(window, repeat(fillvalue, n - size)))
-    elif 0 < i < min(step, n):
-        window += (fillvalue,) * i
-        yield tuple(window)
+def invert_direction(direction):
+    if direction == 'CLOCKWISE':
+        return 'COUNTER_CLOCKWISE'
+    else:
+        return 'CLOCKWISE'
 
 
-def verts_to_points(verts, location):
+def direction_sign(direction):
+    return 1 if direction == 'CLOCKWISE' else -1
+
+
+def spiral_cartesian(t, b, direction):
+    sign = direction_sign(direction)
+    r = exp(b * t)
+    return Vector((r * cos(t), sign * r * sin(t), 0, 0))
+
+
+def spiral_angle_at_length(l, b):
+    return log(l * b / sqrt(1 + b*b)) / b
+
+
+def spiral_radius_at_length(l, b):
+    return l * b / sqrt(1 + b*b)
+
+
+def spiral_length_at_angle(t, b):
+    return sqrt(1 + b*b) * exp(b * t) / b
+
+
+def obsculating_circle_radius_at_angle(t, b):
+    return b * spiral_length_at_angle(t, b)
+
+
+def angle_increment(t, b, curvature_error):
+    r = obsculating_circle_radius_at_angle(t, b)
+    return acos(r / (r + curvature_error))
+
+
+def make_spiral(radius, winding_factor, curvature_error, starting_angle, direction):
+    verts = []
+
+    sign = direction_sign(direction)
+    t = log(radius) / winding_factor
+    length = spiral_length_at_angle(t, winding_factor)
+    rot = atan(1 / winding_factor)
+    rotation = Matrix.Rotation(-sign * (t + rot + pi), 4, 'Z')
+    end = spiral_cartesian(t, winding_factor, direction)
+    angle = starting_angle
+
+    diameter = 0
+    mass_center = Vector((0, 0, 0))
+
+    while True:
+        l = spiral_length_at_angle(angle, winding_factor)
+        if l >= length:
+            break
+        p = spiral_cartesian(angle, winding_factor, direction) - end
+        p[3] = l
+        p = rotation @ p
+        verts.append(p)
+        d = p.length
+        if d > diameter:
+            diameter = d
+            mass_center = p / 2
+        angle += angle_increment(angle, winding_factor, curvature_error)
+
+    verts.append(Vector((0, 0, 0, length)))
+
+    return verts[::-1], diameter / 2, mass_center
+
+
+def verts_to_points(verts):
     vert_array = []
     length_array = []
     for v in verts:
-        vert_array.extend(translate(v[0:3], location))
-        vert_array.append(0)
+        vert_array.extend(v[0:3])
+        vert_array.append(0.0)
         length_array.append(v[3])
     return vert_array, length_array
 
 
-def add_spline_to_curve(curve, verts, location):
-    vert_array, length_array = verts_to_points(verts, location)
+def add_spline_to_curve(curve, verts):
+    verts_array, lengths_array = verts_to_points(verts)
 
     new_spline = curve.data.splines.new(type='POLY')
-    new_spline.points.add(int(len(vert_array) / 4 - 1))
-    new_spline.points.foreach_set('co', vert_array)
-    new_spline.points.foreach_set('weight', length_array)
+    new_spline.points.add(int(len(verts_array) / 4 - 1))
+    new_spline.points.foreach_set('co', verts_array)
+    new_spline.points.foreach_set('weight', lengths_array)
     new_spline.points.foreach_set(
-        'radius', [abs(l)**(1./3) for l in length_array])
+        'radius', [abs(l)**(1./3) for l in lengths_array])
     return new_spline
 
 
@@ -348,3 +267,75 @@ def get_available_radius(curve, point, tangent, normal, steps=1000):
         return radius, contact_point
     else:
         None, None
+
+
+def windowed(seq, n, fillvalue=None, step=1):
+    window = deque(maxlen=n)
+    i = n
+    for _ in map(window.append, seq):
+        i -= 1
+        if not i:
+            i = step
+            yield tuple(window)
+
+    size = len(window)
+    if size < n:
+        yield tuple(chain(window, repeat(fillvalue, n - size)))
+    elif 0 < i < min(step, n):
+        window += (fillvalue,) * i
+        yield tuple(window)
+
+
+def get_selected_point_position_and_weight(curve):
+    for spline in curve.data.splines:
+      selected_point = None
+      selected_point_length = 0.0
+      selected_point_weight = 0.0
+
+      if spline.type == 'POLY':
+        length = 0.0
+        for point, next_point in windowed(spline.points, 2):
+          length += (point.co - next_point.co).length
+          if point.select:
+            selected_point = point
+            selected_point_length = length
+            selected_point_weight = point.weight
+
+      if selected_point:
+        return selected_point_length / length, selected_point_weight
+
+# -------------------------- bad ------------------------
+
+
+def translate(p, t):
+    if len(p) == 3 and len(t) == 3:
+        return (p[0] + t[0], p[1] + t[1], p[2] + t[2])
+    else:
+        return (p[0] + t[0], p[1] + t[1])
+
+
+def distance(a, b):
+    return sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+
+
+def between(a, b):
+    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+
+def to_4d(v):
+    if type(v) in [list, tuple]:
+        if len(v) == 1:
+            return (v[0], 0, 0, 0)
+        if len(v) == 2:
+            return (v[0], v[1], 0, 0)
+        if len(v) == 3:
+            return (v[0], v[1], v[2], 0)
+        return v
+    else:
+        return (v, 0, 0, 0)
+
+
+def rotate(p, angle):
+    cosA = cos(angle)
+    sinA = sin(angle)
+    return (p[0] * cosA - p[1] * sinA, p[0] * sinA + p[1] * cosA)

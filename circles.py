@@ -82,9 +82,6 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
             return False
 
     def execute(self, context):
-        print('>>>>>>>>>> start >>>>>>>>>>>>>>>>')
-        # time_start = time.time()
-
         drawn = 0
         for _ in range(self.max_attempts):
             if self.inscribe_circle():
@@ -94,9 +91,5 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
                     break
             else:
                 print('[ ] Failed inscription.')
-
-        #self.report({'INFO'}, "Drawn %d circles in %.4f sec" % (drawn, time.time() - time_start))
-
-        print('<<<<<<<<<<<<<<< end <<<<<<<<<<<<<<')
 
         return {'FINISHED'}
