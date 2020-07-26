@@ -29,6 +29,7 @@ addon_keymaps = []
 
 
 def menu_func(self, context):
+    self.layout.separator()
     self.layout.operator(spiramir.CURVE_OT_spiramir.bl_idname)
     self.layout.operator(sprues.CURVE_OT_spiramir_sprues.bl_idname)
     self.layout.operator(circles.CURVE_OT_spiramir_circles.bl_idname)
@@ -66,20 +67,4 @@ def unregister():
 
     bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
 
-
-# =========================== attic ====================================
-
-            # if len(curve.data.splines) == 1:
-            #     spline = curve.data.splines[0]
-            #     if spline.type == 'BEZIER':
-            #         origin, tangent, _ = bezier_multi_seg(spline.bezier_points, self.position, closed_loop=True, matrix=curve.matrix_world)
-            #     elif spline.type == 'POLY':
-            #         points = len(spline.points)
-            #         i = round(self.position * points)
-            #         origin = curve.matrix_world @ Vector(spline.points[i].co[0:3])
-            #         tangent = curve.matrix_world @ Vector(spline.points[i + 1 % points].co[0:3]) - origin
-
-        
-        #empty.rotation_mode = 'QUATERNION'
-        #empty.rotation_quaternion = tangent.to_track_quat('X', 'Z')
 
