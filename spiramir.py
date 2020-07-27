@@ -1,10 +1,7 @@
-from math import cos, sin, log, exp, atan, pi
-
-import random, time
+import random
+import time
 
 import bpy
-from bpy_extras.object_utils import object_data_add
-from mathutils import Vector, Matrix
 
 from . import utils
 
@@ -18,17 +15,8 @@ class CURVE_PT_spiramir(bpy.types.Panel):
 
     def draw(self, context):
         parent_curve = context.active_object
-        # If the selected object is a spiramir, the props defaults
-        # should change to align with growth coming from that parent.
         if parent_curve and parent_curve.type == 'CURVE':
-            props = self.layout.operator('curve.spiramir')
-            props.position = 0.5
-            props.radius = parent_curve['spiramir_radius'] * 0.9
-            props.direction = utils.invert_direction(
-                parent_curve['spiramir_direction'])
-            props.winding_factor = parent_curve['spiramir_winding_factor']
-            props.curvature_error = parent_curve['spiramir_curvature_error']
-            props.starting_angle = parent_curve['spiramir_starting_angle']
+            self.layout.operator('curve.spiramir')
 
 
 class CURVE_OT_spiramir(bpy.types.Operator):
@@ -90,12 +78,12 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         description="Maximum growth ratio"
     )
     iterations: bpy.props.IntProperty(
-        default=2,
+        default=10,
         min=1, max=500,
         description="Number of recursive iterations"
     )
     max_attempts: bpy.props.IntProperty(
-        default=2,
+        default=100,
         min=1, max=10000,
         description="Maximum number of placement attempts during recursion"
     )
@@ -104,10 +92,10 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         min=0.0001, max=1.0,
         description="The minimum distance between spirals"
     )
-    offset: bpy.props.IntProperty(
-        default=25,
-        min=1, max=1000,
-        description="Number of vertices forbidden from spawning children at beginning at end of spiral"
+    offset: bpy.props.FloatProperty(
+        default=0.15,
+        min=0.0, max=1.0,
+        description="Fraction of the beginning and end of the parent spiramir to avoid growting from"
     )
 
     def draw(self, context):
@@ -141,68 +129,83 @@ class CURVE_OT_spiramir(bpy.types.Operator):
             else:
                 print(message)
 
+    def get_random_growth_point(self):
+        parent_curve = utils.get_random_curve()
+        position = random.uniform(self.offset, 1 - self.offset)
+        return parent_curve, position
+
+    def add_recursive_spirals(self, context):
+        drawn_spirals = 0
+
+        for _ in range(self.max_attempts):
+            radius = self.radius
+            direction = self.direction
+
+            parent_curve, position = self.get_random_growth_point()
+            print(parent_curve, position)
+            if 'spiramir' in parent_curve:
+                direction = utils.invert_direction(
+                    parent_curve['spiramir_direction'])
+                weight = utils.get_weight_at_position(
+                    parent_curve, position)
+                parent_radius = utils.spiral_radius_at_length(
+                    weight, self.winding_factor)
+                radius = random.uniform(
+                    self.min_growth_ratio * parent_radius, self.max_growth_ratio * parent_radius)
+                print(weight, parent_radius, radius)
+            else:
+                print('non spiramir parent')
+
+            spiral = utils.Spiral(radius=radius, direction=direction, winding_factor=self.winding_factor,
+                                  curvature_error=self.curvature_error, starting_angle=self.starting_angle)
+
+            if spiral.is_viable():
+                spiral.add_to_scene(context, parent_curve=parent_curve,
+                                    position=position, tube_radius=self.tube_radius)
+                drawn_spirals += 1
+                if drawn_spirals >= self.iterations:
+                    break
+
     def execute(self, context):
-        self.log("\n\n=========================== Execute ==================================")
+        self.log(
+            "\n\n=========================== Execute ==================================")
         time_start = time.time()
+
+        single = False
 
         parent_curve = context.object
 
-        if parent_curve:
-          if bpy.context.mode == 'EDIT_CURVE':
-            selected_point_position, selected_point_weight = utils.get_selected_point_position_and_weight(
-                parent_curve)
-            if selected_point_position:
-              self.position = selected_point_position
-              self.radius = self.max_growth_ratio * utils.spiral_radius_at_length(
-                  selected_point_weight, self.winding_factor)
-            bpy.ops.object.mode_set(mode='OBJECT')
-          elif (parent_curve.type != 'CURVE' or not parent_curve.select_get()):
-            parent_curve = None
-
-        origin = Vector((0, 0, 0))
-        bpy.ops.object.empty_add(type='ARROWS', location=origin)
-        empty = context.object
+        position = self.position
+        radius = self.radius
+        direction = self.direction
 
         if parent_curve:
-            constraint = empty.constraints.new('FOLLOW_PATH')
-            constraint.target = parent_curve
-            constraint.offset_factor = self.position
-            constraint.use_curve_follow = True
-            constraint.use_fixed_location = True
-            constraint.forward_axis = 'FORWARD_X'
-            constraint.up_axis = 'UP_Z'
+            if bpy.context.mode == 'EDIT_CURVE':
+                selected_point_position, selected_point_weight = utils.get_selected_point(
+                    parent_curve)
+                if selected_point_position:
+                    position = selected_point_position
+                    radius = self.max_growth_ratio * \
+                        utils.spiral_radius_at_length(
+                            selected_point_weight, self.winding_factor)
+                    if 'spiramir' in parent_curve:
+                        direction = utils.invert_direction(
+                            parent_curve['spiramir_direction'])
+                    single = True
+                bpy.ops.object.mode_set(mode='OBJECT')
+            elif (parent_curve.type != 'CURVE' or not parent_curve.select_get()):
+                parent_curve = None
 
-            if not parent_curve.data.animation_data:
-                override = {'constraint': constraint}
-                bpy.ops.constraint.followpath_path_animate(
-                    override, constraint='Follow Path')
-
-        data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
-        data_curve.dimensions = '2D'
-        data_curve.bevel_depth = self.tube_radius
-
-        curve = object_data_add(context, data_curve)
-
-        curve['spiramir'] = True
-        curve['spiramir_radius'] = self.radius
-        curve['spiramir_direction'] = self.direction
-        curve['spiramir_winding_factor'] = self.winding_factor
-        curve['spiramir_curvature_error'] = self.curvature_error
-        curve['spiramir_starting_angle'] = self.starting_angle
-
-        curve.parent = empty
-
-        spiral, _, _ = utils.make_spiral(
-            self.radius, self.winding_factor, self.curvature_error, self.starting_angle, self.direction)
-
-        utils.add_spline_to_curve(curve, spiral)
+        if single:
+            spiral = utils.Spiral(radius=radius, direction=direction, winding_factor=self.winding_factor,
+                                  curvature_error=self.curvature_error, starting_angle=self.starting_angle)
+            spiral.add_to_scene(context, parent_curve=parent_curve,
+                                position=position, tube_radius=self.tube_radius)
+        else:
+            self.add_recursive_spirals(context)
 
         self.log("Drawing took %.4f sec." % (time.time() - time_start))
 
         context.view_layer.update()
 
         return {'FINISHED'}
-
-# TODO
-# - grow from selected vertex
-# - iterative growth

@@ -1,13 +1,34 @@
-from collections import deque
+from collections import deque, OrderedDict
 from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos, radians
 from itertools import chain, repeat
 import random
 import sys
 
 import bpy
+import bpy_extras
+
 from mathutils import Vector, Matrix
 
-# -------------------------- good ------------------------
+# ------------------------ Python Utils -----------------------------------
+
+
+def windowed(seq, n, fillvalue=None, step=1):
+    window = deque(maxlen=n)
+    i = n
+    for _ in map(window.append, seq):
+        i -= 1
+        if not i:
+            i = step
+            yield tuple(window)
+
+    size = len(window)
+    if size < n:
+        yield tuple(chain(window, repeat(fillvalue, n - size)))
+    elif 0 < i < min(step, n):
+        window += (fillvalue,) * i
+        yield tuple(window)
+
+# --------------------- Blender Utils --------------------------------------
 
 
 def get_align_matrix(context, location):
@@ -20,15 +41,46 @@ def get_align_matrix(context, location):
     return loc @ rot
 
 
+def get_curve(name):
+    return bpy.context.scene.objects[name]
+
+
+def get_scene_objects():
+    return bpy.context.scene.objects
+
+
+def get_visible_scene_curves():
+    curves = []
+    for obj in get_scene_objects():
+        if obj.type == 'CURVE' and obj.visible_get():
+            curves.append(obj)
+    return curves
+
+
+def get_random_curve():
+    curves = get_visible_scene_curves()
+    return random.choice(curves) if curves else None
+
+
+def get_random_spline(curve):
+    return random.choice(curve.data.splines)
+
+
+# --------------------- Spiral Utils --------------------------------------
+
+CLOCKWISE = 'CLOCKWISE'
+COUNTER_CLOCKWISE = 'COUNTER_CLOCKWISE'
+
+
 def invert_direction(direction):
-    if direction == 'CLOCKWISE':
-        return 'COUNTER_CLOCKWISE'
+    if direction == CLOCKWISE:
+        return COUNTER_CLOCKWISE
     else:
-        return 'CLOCKWISE'
+        return CLOCKWISE
 
 
 def direction_sign(direction):
-    return 1 if direction == 'CLOCKWISE' else -1
+    return 1 if direction == CLOCKWISE else -1
 
 
 def spiral_cartesian(t, b, direction):
@@ -58,90 +110,150 @@ def angle_increment(t, b, curvature_error):
     return acos(r / (r + curvature_error))
 
 
-def make_spiral(radius, winding_factor, curvature_error, starting_angle, direction):
-    verts = []
+class Spiral:
 
-    sign = direction_sign(direction)
-    t = log(radius) / winding_factor
-    length = spiral_length_at_angle(t, winding_factor)
-    rot = atan(1 / winding_factor)
-    rotation = Matrix.Rotation(-sign * (t + rot + pi), 4, 'Z')
-    end = spiral_cartesian(t, winding_factor, direction)
-    angle = starting_angle
+    def __init__(self,
+                 direction=CLOCKWISE,
+                 radius=1.0,
+                 winding_factor=0.2,
+                 curvature_error=0.01,
+                 starting_angle=10):
 
-    diameter = 0
-    mass_center = Vector((0, 0, 0))
+        self.direction = direction
+        self.radius = radius
+        self.winding_factor = winding_factor
+        self.curvature_error = curvature_error
+        self.starting_angle = starting_angle
 
-    while True:
-        l = spiral_length_at_angle(angle, winding_factor)
-        if l >= length:
-            break
-        p = spiral_cartesian(angle, winding_factor, direction) - end
-        p[3] = l
-        p = rotation @ p
-        verts.append(p)
-        d = p.length
-        if d > diameter:
-            diameter = d
-            mass_center = p / 2
-        angle += angle_increment(angle, winding_factor, curvature_error)
+        vertices = []
 
-    verts.append(Vector((0, 0, 0, length)))
+        sign = direction_sign(direction)
+        t = log(radius) / winding_factor
+        length = spiral_length_at_angle(t, winding_factor)
+        rot = atan(1 / winding_factor)
+        rotation = Matrix.Rotation(-sign * (t + rot + pi), 4, 'Z')
+        end = spiral_cartesian(t, winding_factor, direction)
+        angle = starting_angle
 
-    return verts[::-1], diameter / 2, mass_center
+        diameter = 0
+        mass_center = Vector((0, 0, 0))
+
+        while True:
+            l = spiral_length_at_angle(angle, winding_factor)
+            if l >= length:
+                break
+            p = spiral_cartesian(angle, winding_factor, direction) - end
+            p[3] = l
+            p = rotation @ p
+            vertices.append(p)
+            d = p.length
+            if d > diameter:
+                diameter = d
+                mass_center = p / 2
+            angle += angle_increment(angle, winding_factor, curvature_error)
+
+        vertices.append(Vector((0, 0, 0, length)))
+
+        # We compute the spiral from the center out, but the growth happens
+        # from the outside to the center, so we need to invert the order
+        # of the vertices to represent that flow in the curve.
+        self.vertices = vertices[::-1]
+
+        self.bounding_circle_radius = diameter / 2
+        self.bounding_circle_center = mass_center
+
+    def is_viable(self):
+        for curve in get_visible_scene_curves():
+            if 'spiramir' in curve:
+                radius = self.bounding_circle_radius
+                center = self.bounding_circle_center
+                other_radius = curve['spiramir_bounding_circle_radius']
+                other_center = Vector(curve['spiramir_bounding_circle_center'])
+
+                # First we check the bounding circles, which are way faster to evaluate
+                # for overlap: two circles overlap iif the distance between their
+                # centers is smaller than the sum of their radii. If they don't overlap
+                # we are guaranteed the spirals will not interset.
+                if (center - other_center).length <= radius + other_radius:
+                    # If the bounding circles intersect, it is still possible
+                    # that the spirals don't intersect, but we need to check
+                    # for intersection more directly.
+                    if self.intersects(curve):
+                        return False
+            else:
+                if self.intersects(curve):
+                    return False
+
+        return True
+
+    def intersects(self, curve):
+        # TODO: write logic
+        return False
+
+    def add_to_scene(self, context, parent_curve=None, position=0.0, tube_radius=0.0):
+        origin = Vector((0, 0, 0))
+        bpy.ops.object.empty_add(type='ARROWS', location=origin)
+        empty = context.object
+
+        if parent_curve:
+            constraint = empty.constraints.new('FOLLOW_PATH')
+            constraint.target = parent_curve
+            constraint.offset_factor = position
+            constraint.use_curve_follow = True
+            constraint.use_fixed_location = True
+            constraint.forward_axis = 'FORWARD_X'
+            constraint.up_axis = 'UP_Z'
+
+            if not parent_curve.data.animation_data:
+                override = {'constraint': constraint}
+                bpy.ops.constraint.followpath_path_animate(
+                    override, constraint='Follow Path')
+
+        data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
+        data_curve.dimensions = '2D'
+        data_curve.bevel_depth = tube_radius
+
+        curve = bpy_extras.object_utils.object_data_add(context, data_curve)
+
+        curve['spiramir'] = True
+        curve['spiramir_radius'] = self.radius
+        curve['spiramir_direction'] = self.direction
+        curve['spiramir_winding_factor'] = self.winding_factor
+        curve['spiramir_curvature_error'] = self.curvature_error
+        curve['spiramir_starting_angle'] = self.starting_angle
+        curve['spiramir_bounding_circle_radius'] = self.bounding_circle_radius
+        curve['spiramir_bounding_circle_center'] = self.bounding_circle_center
+
+        curve.parent = empty
+
+        verts_array = []
+        lengths_array = []
+
+        for v in self.vertices:
+            verts_array.extend(v[0:3])
+            verts_array.append(0.0)
+            lengths_array.append(v[3])
+
+        radii_array = [abs(l)**(1./3) for l in lengths_array]
+
+        spline = curve.data.splines.new(type='POLY')
+        spline.points.add(int(len(verts_array) / 4 - 1))
+        spline.points.foreach_set('co', verts_array)
+        spline.points.foreach_set('weight', lengths_array)
+        spline.points.foreach_set('radius', radii_array)
+
+    # >>>>>>>> MIGHT NOT NEED THIS <<<<<<<<<<<<<<
+    def get_minimum_distance(self, spiral):
+        min_distance = sys.float_info.max
+        for v in self.vertices:
+            for vv in spiral.points:
+                d = (Vector(v) - vv.co).length
+                if d < min_distance:
+                    min_distance = d
+        return min_distance
 
 
-def verts_to_points(verts):
-    vert_array = []
-    length_array = []
-    for v in verts:
-        vert_array.extend(v[0:3])
-        vert_array.append(0.0)
-        length_array.append(v[3])
-    return vert_array, length_array
-
-
-def add_spline_to_curve(curve, verts):
-    verts_array, lengths_array = verts_to_points(verts)
-
-    new_spline = curve.data.splines.new(type='POLY')
-    new_spline.points.add(int(len(verts_array) / 4 - 1))
-    new_spline.points.foreach_set('co', verts_array)
-    new_spline.points.foreach_set('weight', lengths_array)
-    new_spline.points.foreach_set(
-        'radius', [abs(l)**(1./3) for l in lengths_array])
-    return new_spline
-
-
-def minimum_distance(new_spiral, existing_spiral):
-    min_distance = sys.float_info.max
-    for p in new_spiral:
-        for sp in existing_spiral.points:
-            d = (Vector(p) - sp.co).length
-            if d < min_distance:
-                min_distance = d
-    return min_distance
-
-
-# Rotation for the tangent to the normal.
-normal_rot = Matrix.Rotation(radians(90.0), 4, 'Z')
-
-
-def get_curve(name):
-    return bpy.context.scene.objects[name]
-
-
-def get_random_curve():
-    scene = bpy.context.scene
-    curves = []
-    for obj in scene.objects:
-        if obj.type == 'CURVE' and obj.visible_get():
-            curves.append(obj)
-    return random.choice(curves)
-
-
-def get_random_spline(curve):
-    return random.choice(curve.data.splines)
+# ------------------------------------ Bezier Utils -------------------------------
 
 
 def bezier_step(pt0, pt1, pt2, pt3, step=0.5):
@@ -173,6 +285,10 @@ def bezier_tangent(pt0, pt1, pt2, pt3, step=0.5):
     usq3 = u * u * 3.0
 
     return (pt1 - pt0) * usq3 + (pt2 - pt1) * ut6 + (pt3 - pt2) * tsq3
+
+
+# Rotation for the tangent to the normal.
+normal_rot = Matrix.Rotation(radians(90.0), 4, 'Z')
 
 
 def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
@@ -238,6 +354,8 @@ def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
 
     return point, tangent, normal
 
+# ----------------------------- Circles Utils -----------------------------------
+
 
 def get_radius(p1, t1, n1, p2):
     p = p2 - p1
@@ -269,73 +387,43 @@ def get_available_radius(curve, point, tangent, normal, steps=1000):
         None, None
 
 
-def windowed(seq, n, fillvalue=None, step=1):
-    window = deque(maxlen=n)
-    i = n
-    for _ in map(window.append, seq):
-        i -= 1
-        if not i:
-            i = step
-            yield tuple(window)
-
-    size = len(window)
-    if size < n:
-        yield tuple(chain(window, repeat(fillvalue, n - size)))
-    elif 0 < i < min(step, n):
-        window += (fillvalue,) * i
-        yield tuple(window)
+# --------------------------- Curve Utils ------------------------------------------
 
 
-def get_selected_point_position_and_weight(curve):
+def get_selected_point(curve):
     for spline in curve.data.splines:
-      selected_point = None
-      selected_point_length = 0.0
-      selected_point_weight = 0.0
+        selected_point = None
+        selected_point_length = 0.0
+        selected_point_weight = 0.0
 
-      if spline.type == 'POLY':
-        length = 0.0
-        for point, next_point in windowed(spline.points, 2):
-          length += (point.co - next_point.co).length
-          if point.select:
-            selected_point = point
-            selected_point_length = length
-            selected_point_weight = point.weight
+        if spline.type == 'POLY':
+            length = 0.0
+            for point, next_point in windowed(spline.points, 2):
+                length += (point.co - next_point.co).length
+                if point.select:
+                    selected_point = point
+                    selected_point_length = length
+                    selected_point_weight = point.weight
 
-      if selected_point:
-        return selected_point_length / length, selected_point_weight
-
-# -------------------------- bad ------------------------
+        if selected_point:
+            return selected_point_length / length, selected_point_weight
 
 
-def translate(p, t):
-    if len(p) == 3 and len(t) == 3:
-        return (p[0] + t[0], p[1] + t[1], p[2] + t[2])
-    else:
-        return (p[0] + t[0], p[1] + t[1])
+def get_weight_at_position(curve, position):
+    weights = OrderedDict()
 
+    length = 0.0
+    for spline in curve.data.splines:
+        if spline.type == 'POLY':
+            for point, next_point in windowed(spline.points, 2):
+                length += (point.co - next_point.co).length
+                weights[length] = point.weight
 
-def distance(a, b):
-    return sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+    position *= length
 
+    for l, weight in weights.items():
+        if l >= position:
+            return weight
 
-def between(a, b):
-    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-
-
-def to_4d(v):
-    if type(v) in [list, tuple]:
-        if len(v) == 1:
-            return (v[0], 0, 0, 0)
-        if len(v) == 2:
-            return (v[0], v[1], 0, 0)
-        if len(v) == 3:
-            return (v[0], v[1], v[2], 0)
-        return v
-    else:
-        return (v, 0, 0, 0)
-
-
-def rotate(p, angle):
-    cosA = cos(angle)
-    sinA = sin(angle)
-    return (p[0] * cosA - p[1] * sinA, p[0] * sinA + p[1] * cosA)
+    # If we get here something's wrong, so just return a default.
+    return 0.0

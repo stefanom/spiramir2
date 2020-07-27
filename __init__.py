@@ -66,5 +66,3 @@ def unregister():
         bpy.utils.unregister_class(cls)
 
     bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
-
-
