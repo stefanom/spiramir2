@@ -142,7 +142,6 @@ class CURVE_OT_spiramir(bpy.types.Operator):
             direction = self.direction
 
             parent_curve, position = self.get_random_growth_point()
-            print(parent_curve, position)
             if 'spiramir' in parent_curve:
                 direction = utils.invert_direction(
                     parent_curve['spiramir_direction'])
@@ -152,9 +151,6 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                     weight, self.winding_factor)
                 radius = random.uniform(
                     self.min_growth_ratio * parent_radius, self.max_growth_ratio * parent_radius)
-                print(weight, parent_radius, radius)
-            else:
-                print('non spiramir parent')
 
             spiral = utils.Spiral(radius=radius, direction=direction, winding_factor=self.winding_factor,
                                   curvature_error=self.curvature_error, starting_angle=self.starting_angle)
