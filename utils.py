@@ -52,7 +52,7 @@ def get_scene_objects():
 def get_visible_scene_curves():
     curves = []
     for obj in get_scene_objects():
-        if obj.type == 'CURVE' and obj.visible_get():
+        if obj.type == 'CURVE' and obj.visible_get() and obj.data.bevel_depth > 0:
             curves.append(obj)
     return curves
 
@@ -143,10 +143,10 @@ class Spiral:
             if l >= length:
                 break
             p = spiral_cartesian(angle, winding_factor, direction) - end
+            d = p.length
             p[3] = l
             p = rotation @ p
             vertices.append(p)
-            d = p.length
             if d > diameter:
                 diameter = d
                 mass_center = p / 2
@@ -160,54 +160,47 @@ class Spiral:
         self.vertices = vertices[::-1]
 
         self.bounding_circle_radius = diameter / 2
-        self.bounding_circle_center = mass_center
+        self.bounding_circle_center = mass_center.to_3d()
 
-    def is_viable(self):
-        for curve in get_visible_scene_curves():
-            if 'spiramir' in curve:
-                radius = self.bounding_circle_radius
-                center = self.bounding_circle_center
-                other_radius = curve['spiramir_bounding_circle_radius']
-                other_center = Vector(curve['spiramir_bounding_circle_center'])
+    # def is_viable(self):
+    #     for curve in get_visible_scene_curves():
+    #         if 'spiramir' in curve:
+    #             radius = self.bounding_circle_radius
+    #             center = self.bounding_circle_center
+    #             other_radius = curve['spiramir_bounding_circle_radius']
+    #             other_center = Vector(curve['spiramir_bounding_circle_center'])
 
-                # First we check the bounding circles, which are way faster to evaluate
-                # for overlap: two circles overlap iif the distance between their
-                # centers is smaller than the sum of their radii. If they don't overlap
-                # we are guaranteed the spirals will not interset.
-                if (center - other_center).length <= radius + other_radius:
-                    # If the bounding circles intersect, it is still possible
-                    # that the spirals don't intersect, but we need to check
-                    # for intersection more directly.
-                    if self.intersects(curve):
-                        return False
-            else:
-                if self.intersects(curve):
-                    return False
+    #             # First we check the bounding circles, which are way faster to evaluate
+    #             # for overlap: two circles overlap iif the distance between their
+    #             # centers is smaller than the sum of their radii. If they don't overlap
+    #             # we are guaranteed the spirals will not interset.
+    #             if (center - other_center).length <= radius + other_radius:
+    #                 # If the bounding circles intersect, it is still possible
+    #                 # that the spirals don't intersect, but we need to check
+    #                 # for intersection more directly.
+    #                 if self.intersects(curve):
+    #                     return False
+    #         else:
+    #             if self.intersects(curve):
+    #                 return False
+    #     return True
 
-        return True
+    # def intersects(self, curve, steps=100):
+    #     vertices = []
+    #     for spline in curve.data.splines:
+    #         if spline.type == 'POLY':
+    #             vertices.extend(spline.points)
+    #         if spline.type == 'BEZIER':
+    #             for i in range(steps):
+    #                 p, _, _ = bezier_multi_seg(
+    #                     spline.bezier_points, i / steps, matrix=curve.matrix_world)
+    #                 vertices.append(point)
+    #       return False
 
-    def intersects(self, curve):
-        # TODO: write logic
-        return False
-
-    def add_to_scene(self, context, parent_curve=None, position=0.0, tube_radius=0.0):
-        origin = Vector((0, 0, 0))
-        bpy.ops.object.empty_add(type='ARROWS', location=origin)
-        empty = context.object
-
+    def add_to_scene(self, context, parent_curve=None, position=0.0, tube_radius=0.0, draw_circle=False):
         if parent_curve:
-            constraint = empty.constraints.new('FOLLOW_PATH')
-            constraint.target = parent_curve
-            constraint.offset_factor = position
-            constraint.use_curve_follow = True
-            constraint.use_fixed_location = True
-            constraint.forward_axis = 'FORWARD_X'
-            constraint.up_axis = 'UP_Z'
-
-            if not parent_curve.data.animation_data:
-                override = {'constraint': constraint}
-                bpy.ops.constraint.followpath_path_animate(
-                    override, constraint='Follow Path')
+            empty = create_constrainted_empty(parent_curve, position)
+            empty.name = "Spiramir Connector"
 
         data_curve = bpy.data.curves.new(name='Spiramir', type='CURVE')
         data_curve.dimensions = '2D'
@@ -224,7 +217,8 @@ class Spiral:
         curve['spiramir_bounding_circle_radius'] = self.bounding_circle_radius
         curve['spiramir_bounding_circle_center'] = self.bounding_circle_center
 
-        curve.parent = empty
+        if parent_curve:
+            curve.parent = empty
 
         verts_array = []
         lengths_array = []
@@ -242,15 +236,13 @@ class Spiral:
         spline.points.foreach_set('weight', lengths_array)
         spline.points.foreach_set('radius', radii_array)
 
-    # >>>>>>>> MIGHT NOT NEED THIS <<<<<<<<<<<<<<
-    def get_minimum_distance(self, spiral):
-        min_distance = sys.float_info.max
-        for v in self.vertices:
-            for vv in spiral.points:
-                d = (Vector(v) - vv.co).length
-                if d < min_distance:
-                    min_distance = d
-        return min_distance
+        if draw_circle:
+            bpy.ops.curve.primitive_bezier_circle_add(
+                radius=self.bounding_circle_radius, location=self.bounding_circle_center)
+            circle = bpy.context.object
+            circle.name = 'Bounding Circle'
+            if parent_curve:
+                circle.parent = empty
 
 
 # ------------------------------------ Bezier Utils -------------------------------
@@ -289,6 +281,7 @@ def bezier_tangent(pt0, pt1, pt2, pt3, step=0.5):
 
 # Rotation for the tangent to the normal.
 normal_rot = Matrix.Rotation(radians(90.0), 4, 'Z')
+normal_rot_neg = Matrix.Rotation(radians(-90.0), 4, 'Z')
 
 
 def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
@@ -354,40 +347,99 @@ def bezier_multi_seg(knots=[], step=0.0, closed_loop=True, matrix=Matrix()):
 
     return point, tangent, normal
 
+
 # ----------------------------- Circles Utils -----------------------------------
 
 
 def get_radius(p1, t1, n1, p2):
     p = p2 - p1
-    x = p.dot(t1)
     y = p.dot(n1)
-    return (x*x + y*y) / (2 * y) if y != 0.0 else 0.0
+    if y:
+        x = p.dot(t1)
+        return (x*x + y*y) / (2 * y)
+    else:
+        return 0.0
 
 
-def get_available_radius(curve, point, tangent, normal, steps=1000):
-    radius = sys.float_info.max
-    contact_point = None
-
-    for obj in bpy.context.scene.objects:
-        if obj.type == 'CURVE' and obj.visible_get():
-            for spline in obj.data.splines:
-                if spline.type != 'BEZIER':
-                    continue
+def get_all_visible_curve_points(steps=100):
+    for obj in get_visible_scene_curves():
+        for spline in obj.data.splines:
+            if spline.type == 'POLY':
+                for p in spline.points:
+                    p = obj.matrix_world @ p.co.to_3d()
+                    yield p
+            elif spline.type == 'BEZIER':
                 for i in range(steps):
                     p, _, _ = bezier_multi_seg(
-                        spline.bezier_points, i / steps, closed_loop=True, matrix=obj.matrix_world)
-                    r = get_radius(point, tangent, normal, p)
-                    if r > 0.0 and r < radius:
-                        radius = r
-                        contact_point = p
+                        spline.bezier_points, i / steps, matrix=obj.matrix_world)
+                    yield p
 
-    if radius != sys.float_info.max:
-        return radius, contact_point
-    else:
-        None, None
 
+def get_available_radius(point, tangent, normal, grow_left=True, steps=100):
+    radius = sys.float_info.max if grow_left else -sys.float_info.max
+    contact_point = None
+
+    for p in get_all_visible_curve_points(steps=steps):
+        r = get_radius(point, tangent, normal, p)
+        if grow_left and r > 0.0 and r < radius:
+            radius = r
+            contact_point = p
+        if not grow_left and r < 0.0 and r > radius:
+            radius = r
+            contact_point = p
+
+    return radius, contact_point
+
+def add_circle(curve, position, radius, contact_point=None, bevel_depth=0.0):
+    if not radius:
+        print('warning: tried to draw a zero circle')
+        return
+
+    empty = create_constrainted_empty(curve, position)
+    empty.name = 'Circle Connector'
+    #empty.parent = curve
+    #empty.matrix_parent_inverse = curve.matrix_world.inverted()
+
+    # CAREFUL: radius can be negative, signaling that we would be growing
+    # on the outside of the curve.
+    bpy.ops.curve.primitive_bezier_circle_add(radius=abs(radius), location=(0, radius, 0))
+    circle = bpy.context.object
+    #circle.name = "Availability Circle"
+    circle.parent = empty
+    circle.data.bevel_depth = bevel_depth
+
+    if contact_point:
+        bpy.ops.object.empty_add(type='SINGLE_ARROW', location=contact_point)
+        contact_point_empty = bpy.context.object
+        contact_point_empty.name = "Contact Point"
+        #contact_point_empty.parent = empty
+        #contact_point_empty.matrix_parent_inverse = empty.matrix_world.inverted()
+
+    return circle
 
 # --------------------------- Curve Utils ------------------------------------------
+
+def create_constrainted_empty(curve, position):
+    if bpy.context.mode == 'EDIT_CURVE':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    bpy.ops.object.empty_add(type='ARROWS')
+    empty = bpy.context.object
+
+    constraint = empty.constraints.new('FOLLOW_PATH')
+    constraint.target = curve
+    constraint.offset_factor = position
+    constraint.use_curve_follow = True
+    constraint.use_fixed_location = True
+    constraint.forward_axis = 'FORWARD_X'
+    constraint.up_axis = 'UP_Z'
+
+    if not curve.data.animation_data:
+        override = {'constraint': constraint}
+        bpy.ops.constraint.followpath_path_animate(
+            override, constraint='Follow Path')
+
+    return empty
 
 
 def get_selected_point(curve):
@@ -399,31 +451,65 @@ def get_selected_point(curve):
         if spline.type == 'POLY':
             length = 0.0
             for point, next_point in windowed(spline.points, 2):
-                length += (point.co - next_point.co).length
                 if point.select:
                     selected_point = point
                     selected_point_length = length
                     selected_point_weight = point.weight
+                p = curve.matrix_world @ point.co.to_3d()
+                np = curve.matrix_world @ next_point.co.to_3d()
+                length += (np - p).length
 
         if selected_point:
             return selected_point_length / length, selected_point_weight
 
 
+def get_point_on_curve(curve, position):
+    if len(curve.data.splines) > 1:
+        raise ValueError('This function only works with curves with a single spline.')
+
+    spline = curve.data.splines[0]
+
+    if spline.type == 'BEZIER':
+        return bezier_multi_seg(spline.bezier_points, position, matrix=curve.matrix_world)
+
+    elif spline.type == 'POLY':
+        points = OrderedDict()
+        length = 0.0
+
+        for previous_point, point, next_point in windowed(spline.points, 3):
+            previous_point = curve.matrix_world @ previous_point.co.to_3d()
+            point = curve.matrix_world @ point.co.to_3d()
+            next_point = curve.matrix_world @ next_point.co.to_3d()
+
+            length += (point - previous_point).length
+            tangent = next_point - previous_point
+            tangent.normalize()
+            normal = normal_rot @ tangent
+
+            points[length] = (point, tangent, normal)
+
+        position *= length
+
+        for l, v in points.items():
+            if l >= position:
+                return v
+
+
 def get_weight_at_position(curve, position):
-    weights = OrderedDict()
+    if 'spiramir' not in curve:
+        raise ValueError('This function only works with spiramir curves.')
 
-    length = 0.0
-    for spline in curve.data.splines:
-        if spline.type == 'POLY':
-            for point, next_point in windowed(spline.points, 2):
-                length += (point.co - next_point.co).length
-                weights[length] = point.weight
+    spline = curve.data.splines[0]
 
-    position *= length
+    if spline.type == 'POLY':
+        weights = OrderedDict()
+        length = 0.0
+        for point, next_point in windowed(spline.points, 2):
+            length += (next_point.co - point.co).length
+            weights[length] = point.weight
 
-    for l, weight in weights.items():
-        if l >= position:
-            return weight
+        position *= length
 
-    # If we get here something's wrong, so just return a default.
-    return 0.0
+        for l, weight in weights.items():
+            if l >= position:
+                return weight
