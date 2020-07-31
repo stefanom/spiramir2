@@ -1,4 +1,5 @@
-import random, time
+import random
+import time
 
 import bpy
 
@@ -24,17 +25,17 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
         description="Maximum number of attempts before giving up"
     )
     min_radius: bpy.props.FloatProperty(
-        default=0.1,
+        default=0.0,
         min=0.0, max=1000.0,
         description="Smallest radius allowed for embedded circles"
     )
     max_radius: bpy.props.FloatProperty(
-        default=0.7,
+        default=10,
         min=0.0, max=1000.0,
         description="Biggest radius allowed for embedded circles"
     )
     bevel_depth: bpy.props.FloatProperty(
-        default=0.01,
+        default=0.1,
         min=0.0, max=1000.0,
         description="Bevel depth for the embedded circles"
     )
@@ -51,11 +52,13 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
         parent_curve = context.object
         if parent_curve and bpy.context.mode == 'EDIT_CURVE':
             position, _ = utils.get_selected_point(parent_curve)
-            p, t, n = utils.get_point_on_curve(parent_curve, position)
-
-            grow_inside = 'spiramir' not in parent_curve
-            r, cp = utils.get_available_radius(p, t, n, grow_inside)
-            utils.add_circle(parent_curve, position, r, cp, self.bevel_depth)
+            growth_point, _ = utils.get_constrainted_empty(
+                parent_curve, position)
+            grow_left = 'spiramir' not in parent_curve
+            r, cp = utils.get_available_radius(
+                growth_point, grow_left=grow_left)
+            utils.add_circle(r, parent=growth_point,
+                             contact_point=cp, bevel_depth=self.bevel_depth)
         else:
             drawn = 0
             for _ in range(self.max_attempts):
@@ -63,13 +66,18 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
                 if not curve:
                     raise ValueError('No curve to grow from.')
                 position = random.uniform(0.0, 1.0)
-                p, t, n = utils.get_point_on_curve(curve, position)
-                r, cp = utils.get_available_radius(p, t, n)
+
+                growth_point, _ = utils.get_constrainted_empty(
+                    parent_curve, position)
+                r, cp = utils.get_available_radius(growth_point)
                 if r > self.min_radius:
                     r = min(r, self.max_radius)
-                    utils.add_circle(curve, position, r, cp, self.bevel_depth)
+                    utils.add_circle(
+                        r, parent=growth_point, contact_point=cp, bevel_depth=self.bevel_depth)
                     drawn += 1
                     if drawn == self.iterations:
                         break
+                else:
+                    utils.remove(growth_point)
 
         return {'FINISHED'}
