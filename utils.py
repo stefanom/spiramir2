@@ -1,3 +1,4 @@
+from mathutils import Vector
 from collections import deque, OrderedDict
 from math import cos, sin, sqrt, log, exp, atan, atan2, pi, acos, radians
 from itertools import chain, repeat
@@ -8,7 +9,7 @@ import bpy
 import bpy_extras
 
 from mathutils import Vector, Matrix
-
+from mathutils.geometry import interpolate_bezier
 
 # ------------------------ Python Utils -----------------------------------
 
@@ -295,7 +296,6 @@ def get_selected_point(curve):
             return selected_point_length / length, selected_point_weight
 
 
-# TODO: is there a way to obtain this from a constrained empty?
 def get_weight_at_position(curve, position):
     if 'spiramir' not in curve:
         raise ValueError('This function only works with spiramir curves.')
@@ -322,7 +322,8 @@ def get_weight_at_position(curve, position):
 def get_touching_circle_radius(p, t, n, point):
     p = point - p
     # If the points are too close, we are likely 
-    # measuring points from the same curve.
+    # measuring adjecent points from the same curve due to
+    # interpolation errors in POLY curves, so not a useful signal.
     if p.length < 0.1:
         return 0.0
     y = p.dot(n)
@@ -333,30 +334,50 @@ def get_touching_circle_radius(p, t, n, point):
         return 0.0
 
 
-def get_all_visible_curve_points(steps):
-    for curve in get_visible_scene_curves():
-        # While technically it is possible to simplify this code
-        # by using a constrained empty to obtain the points
-        # even of a spiramir curve, it is *much* faster (some 20x)
-        # to just iterate over the existing points, mostly
-        # because we have to update the entire scene every
-        # time we update the constrain position, which 
-        # appears to be very slow (at least in Blender 2.83).
-        if 'spiramir' in curve:
-            for spline in curve.data.splines:
+def curve_points_iterator(curves, steps):
+    for curve in curves:
+        for spline in curve.data.splines:
+            if spline.type == 'POLY':
                 for p in spline.points:
                     yield curve.matrix_world @ p.co.to_3d()
-        else:
-            cursor, constraint = get_constrainted_empty(curve, 0.0)
-            for i in range(steps):
-                constraint.offset_factor = i / steps
-                # Need to update or changing the constrains
-                # won't change the position.
-                update(cursor, constraint)
-                # Need to make a copy of the position or it will
-                # change when the constraint changes.
-                yield Vector(cursor.matrix_world.to_translation())
-            remove(cursor)
+            if spline.type == 'BEZIER':
+                if len(spline.bezier_points) < 2:
+                    break
+                segments = len(spline.bezier_points)
+                if not spline.use_cyclic_u:
+                    segments -= 1
+
+                for i in range(segments):
+                    inext = (i + 1) % len(spline.bezier_points)
+
+                    knot1 = spline.bezier_points[i].co
+                    handle1 = spline.bezier_points[i].handle_right
+                    handle2 = spline.bezier_points[inext].handle_left
+                    knot2 = spline.bezier_points[inext].co
+
+                    for p in interpolate_bezier(knot1, handle1, handle2, knot2, steps):
+                        yield curve.matrix_world @ p
+
+
+def get_intersectable_curves(empty, p, n, grow_left):
+    intersectable_curves = []
+    evaluated = 0
+    for curve in get_visible_scene_curves():
+        evaluated += 1
+        # The bounding box is 3D. We only grow on the XY plane so we don't really
+        # care about the z coordinate and so only need to check 4 out of 8
+        # vertices of the bounding box.
+        for i in range(0, 8, 2):
+            c = curve.bound_box[i]
+            corner = curve.matrix_world @ Vector((c[0], c[1], 0))
+            y = (corner - p).dot(n)
+            if (grow_left and y > 0.0) or (not grow_left and y < 0.0):
+                intersectable_curves.append(curve)
+                break
+        
+    print('kept %f%% (%i out of %i)' % (100 * len(intersectable_curves) / evaluated, len(intersectable_curves), evaluated))
+
+    return intersectable_curves
 
 
 def get_available_radius(empty, grow_left=True, steps=128):
@@ -364,7 +385,8 @@ def get_available_radius(empty, grow_left=True, steps=128):
     radius = sys.float_info.max if grow_left else -sys.float_info.max
     contact_point = None
 
-    for p in get_all_visible_curve_points(steps):
+    intersectable_curves = get_intersectable_curves(empty, ep, en, grow_left)
+    for p in curve_points_iterator(intersectable_curves, steps):
         r = get_touching_circle_radius(ep, et, en, p)
         if (grow_left and r > 0.0 and r < radius) or (not grow_left and r < 0.0 and r > radius):
             radius = r

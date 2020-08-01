@@ -8,7 +8,6 @@
 
  *  speed up iterative growth
     * avoid testing points on curves that can never intersect (wrong side of tangent, non-overlapping bounding boxes)
-    * fix the 
  *  make sure sprues still work
  *  see if spiramir and circles work together well
  *  test on the various expected containment shapes

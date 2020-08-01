@@ -70,7 +70,7 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
                 position = random.uniform(0.0, 1.0)
 
                 growth_point, _ = utils.get_constrainted_empty(
-                    parent_curve, position)
+                    curve, position)
                 r, cp = utils.get_available_radius(growth_point)
                 if r > self.min_radius:
                     r = min(r, self.max_radius)
