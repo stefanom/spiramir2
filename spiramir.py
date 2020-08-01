@@ -11,7 +11,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
     bl_label = "Spiramir"
     bl_options = {'REGISTER', 'UNDO'}
 
-    verbose = False
+    verbose = True
 
     direction: bpy.props.EnumProperty(
         items=[(utils.COUNTER_CLOCKWISE, "Counter Clockwise",
@@ -53,9 +53,13 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         min=0.0, max=100.0,
         description="Relative position of the growth point"
     )
-    draw_supports: bpy.props.BoolProperty(
+    draw_availability: bpy.props.BoolProperty(
         default=False,
-        description="Whether to draw the supports or not"
+        description="Whether to draw the availability circle"
+    )
+    draw_bounding: bpy.props.BoolProperty(
+        default=False,
+        description="Whether to draw the bounding circle"
     )
 
     iterations: bpy.props.IntProperty(
@@ -69,7 +73,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         description="Maximum number of placement attempts during recursion"
     )
     min_growth_ratio: bpy.props.FloatProperty(
-        default=0.4,
+        default=0.9,
         min=0.0, max=1.0,
         description="Minimum growth ratio"
     )
@@ -103,7 +107,8 @@ class CURVE_OT_spiramir(bpy.types.Operator):
         col.prop(self, "starting_angle", text="Starting Angle")
         col.prop(self, "curvature_error", text="Curvature Error")
         col.prop(self, "tube_radius", text="Tube Radius")
-        col.prop(self, "draw_supports", text="Draw Supports")
+        col.prop(self, "draw_availability", text="Draw Availability Circle")
+        col.prop(self, "draw_bounding", text="Draw Bounding Circle")
 
         col = layout.column(align=True)
         col.label(text="Recursion Parameters:")
@@ -129,7 +134,9 @@ class CURVE_OT_spiramir(bpy.types.Operator):
     def add_recursive_spirals(self, context):
         drawn_spirals = 0
 
-        for _ in range(self.max_attempts):
+        for attempt in range(1, self.max_attempts, 1):
+            time_start = time.time()
+
             growth_point = None
             radius = self.radius
             direction = self.direction
@@ -143,7 +150,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                     'spiramir' in parent_curve and parent_curve['spiramir_direction'] == utils.CLOCKWISE)
                 available_radius, contact_point = utils.get_available_radius(
                     growth_point, grow_left=grow_left)
-                if self.draw_supports and contact_point:
+                if self.draw_availability and contact_point:
                     utils.add_circle(
                         available_radius, parent=growth_point, contact_point=contact_point)
 
@@ -165,12 +172,13 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                                       curvature_error=self.curvature_error, starting_angle=self.starting_angle)
 
                 spiral.add_to_scene(
-                    context, parent=growth_point, tube_radius=self.tube_radius, draw_circle=self.draw_supports)
+                    context, parent=growth_point, tube_radius=self.tube_radius, draw_circle=self.draw_bounding)
                 drawn_spirals += 1
                 if drawn_spirals >= self.iterations:
                     break
-            else:
-                utils.remove(growth_point)
+
+            self.log("Cycle took %.4f sec." % (time.time() - time_start))
+        self.log("Success rate: %.1f%% (%i in %i)" % (100 * drawn_spirals / attempt, drawn_spirals, attempt))
 
     def execute(self, context):
         self.log(
@@ -195,7 +203,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                         'spiramir' in parent_curve and parent_curve['spiramir_direction'] == utils.CLOCKWISE)
                     available_radius, contact_point = utils.get_available_radius(
                         growth_point, grow_left=grow_left)
-                    if self.draw_supports and contact_point:
+                    if self.draw_availability and contact_point:
                         utils.add_circle(
                             available_radius, parent=growth_point, contact_point=contact_point)
                     radius = self.max_growth_ratio * \
@@ -212,7 +220,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
             spiral = utils.Spiral(radius=radius, direction=direction, winding_factor=self.winding_factor,
                                   curvature_error=self.curvature_error, starting_angle=self.starting_angle)
             spiral.add_to_scene(context, parent=growth_point,
-                                tube_radius=self.tube_radius, draw_circle=self.draw_supports)
+                                tube_radius=self.tube_radius, draw_circle=self.draw_bounding)
         else:
             self.add_recursive_spirals(context)
 

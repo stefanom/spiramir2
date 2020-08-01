@@ -112,7 +112,7 @@ def get_constrainted_empty(curve, position):
     constraint.forward_axis = 'FORWARD_X'
     constraint.up_axis = 'UP_Z'
 
-    if not curve.data.animation_data:
+    if not curve.data or not curve.data.animation_data:
         override = {'constraint': constraint}
         bpy.ops.constraint.followpath_path_animate(
             override, constraint='Follow Path')
@@ -321,6 +321,10 @@ def get_weight_at_position(curve, position):
 
 def get_touching_circle_radius(p, t, n, point):
     p = point - p
+    # If the points are too close, we are likely 
+    # measuring points from the same curve.
+    if p.length < 0.1:
+        return 0.0
     y = p.dot(n)
     if y:
         x = p.dot(t)
@@ -331,19 +335,31 @@ def get_touching_circle_radius(p, t, n, point):
 
 def get_all_visible_curve_points(steps):
     for curve in get_visible_scene_curves():
-        cursor, constraint = get_constrainted_empty(curve, 0.0)
-        for i in range(steps):
-            constraint.offset_factor = i / steps
-            # Need to update or changing the constrains
-            # won't change the position.
-            update(cursor, constraint)
-            # Need to make a copy of the position or it will
-            # change when the constraint changes.
-            yield Vector(cursor.matrix_world.translation)
-        remove(cursor)
+        # While technically it is possible to simplify this code
+        # by using a constrained empty to obtain the points
+        # even of a spiramir curve, it is *much* faster (some 20x)
+        # to just iterate over the existing points, mostly
+        # because we have to update the entire scene every
+        # time we update the constrain position, which 
+        # appears to be very slow (at least in Blender 2.83).
+        if 'spiramir' in curve:
+            for spline in curve.data.splines:
+                for p in spline.points:
+                    yield curve.matrix_world @ p.co.to_3d()
+        else:
+            cursor, constraint = get_constrainted_empty(curve, 0.0)
+            for i in range(steps):
+                constraint.offset_factor = i / steps
+                # Need to update or changing the constrains
+                # won't change the position.
+                update(cursor, constraint)
+                # Need to make a copy of the position or it will
+                # change when the constraint changes.
+                yield Vector(cursor.matrix_world.to_translation())
+            remove(cursor)
 
 
-def get_available_radius(empty, grow_left=True, steps=32):
+def get_available_radius(empty, grow_left=True, steps=128):
     ep, et, en = get_empty_orientations(empty)
     radius = sys.float_info.max if grow_left else -sys.float_info.max
     contact_point = None
@@ -367,7 +383,6 @@ def add_circle(radius, parent=None, contact_point=None, bevel_depth=0.0):
     bpy.ops.curve.primitive_bezier_circle_add(
         radius=abs(radius), location=(0, radius, 0))
     circle = bpy.context.object
-    circle.name = "Availability Circle"
     circle.data.bevel_depth = bevel_depth
 
     if parent:
