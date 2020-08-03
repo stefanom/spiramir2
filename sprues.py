@@ -14,17 +14,17 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     distance: bpy.props.FloatProperty(
-        default=0.4,
+        default=1,
         min=0.00001, max=1000.0,
         description="Distance on the curve between sprues"
     )
     offset: bpy.props.FloatProperty(
-        default=0.03,
+        default=0.5,
         min=0.00001, max=1000.0,
         description="Offset to start from the beginning of the curve"
     )
     height: bpy.props.FloatProperty(
-        default=1.0,
+        default=10.0,
         min=0.00001, max=1000.0,
         description="Height of the end point of the sprues (on the Z axis)"
     )
@@ -51,36 +51,17 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
     def poll(cls, context):
         return context.mode == 'OBJECT'
 
-    def get_contact_points_for_spline(self, spline):
-        contacts = []
-        travel = 0.0
-        previous_length = abs(spline.points[0].weight)
-        first = True
-
-        for point in spline.points:
-            length = abs(point.weight)
-            travel += abs(length - previous_length)
-            previous_length = length
-            if first and travel > self.offset:
-                contacts.append(point)
-                travel = 0.0
-                first = False
-            if travel > self.distance:
-                contacts.append(point)
-                travel %= self.distance
-
-        return contacts
-
     def draw_sprue(self, context, contact, contact_radius, mass_center):
-        data_curve = bpy.data.curves.new(name='Sprue', type='CURVE')
-        sprue = object_data_add(context, data_curve)
+        curve = bpy.data.curves.new(name='Sprue', type='CURVE')
+        sprue = object_data_add(context, curve)
 
         sprue.data.dimensions = '3D'
-        sprue.data.resolution_u = 32
+        sprue.data.resolution_u = 64
         sprue.data.use_path = True
         sprue.data.fill_mode = 'FULL'
+        sprue.data.bevel_depth = self.radius
 
-        sprue['spiramir_sprues'] = True
+        sprue['spiramir_sprue'] = True
 
         spline = sprue.data.splines.new(type='BEZIER')
         spline.bezier_points.add(1)
@@ -107,19 +88,15 @@ class CURVE_OT_spiramir_sprues(bpy.types.Operator):
         contacts = []
         mass_center = Vector((0, 0, 0))
 
-        for o in context.view_layer.objects:
-            if o.select_get() and 'spiramir' in o and o['spiramir']:
-                for spline in o.data.splines:
-                    for point in self.get_contact_points_for_spline(spline):
-                        contact_point = o.matrix_world @ point.co.to_3d()
-                        contacts.append((contact_point, point.radius))
-                        mass_center += contact_point
+        for curve in utils.get_visible_scene_curves():
+            for contact_point, radius in utils.get_equidistant_points(curve, self.offset, self.distance):
+                contacts.append((contact_point, radius))
+                mass_center += contact_point
 
         if contacts:
             mass_center /= len(contacts)
 
         for contact_point, contact_radius in contacts:
-            self.draw_sprue(context, contact_point,
-                            contact_radius, mass_center)
+            self.draw_sprue(context, contact_point, contact_radius, mass_center)
 
         return {'FINISHED'}

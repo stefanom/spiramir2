@@ -176,6 +176,8 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                 drawn_spirals += 1
                 if drawn_spirals >= self.iterations:
                     break
+            elif growth_point and not self.draw_availability:
+                utils.remove(growth_point)
 
             self.log("Cycle took %.4f sec." % (time.time() - time_start))
         self.log("Success rate: %.1f%% (%i in %i)" % (100 * drawn_spirals / attempt, drawn_spirals, attempt))

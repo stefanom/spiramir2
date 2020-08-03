@@ -334,29 +334,43 @@ def get_touching_circle_radius(p, t, n, point):
         return 0.0
 
 
-def curve_points_iterator(curves, steps):
-    for curve in curves:
-        for spline in curve.data.splines:
-            if spline.type == 'POLY':
-                for p in spline.points:
-                    yield curve.matrix_world @ p.co.to_3d()
-            if spline.type == 'BEZIER':
-                if len(spline.bezier_points) < 2:
-                    break
-                segments = len(spline.bezier_points)
-                if not spline.use_cyclic_u:
-                    segments -= 1
+def curve_points_iterator(curve, steps):
+    for spline in curve.data.splines:
+        if spline.type == 'POLY':
+            for p in spline.points:
+                yield curve.matrix_world @ p.co.to_3d(), p.radius
+        if spline.type == 'BEZIER':
+            if len(spline.bezier_points) < 2:
+                break
+            segments = len(spline.bezier_points)
+            if not spline.use_cyclic_u:
+                segments -= 1
 
-                for i in range(segments):
-                    inext = (i + 1) % len(spline.bezier_points)
+            for i in range(segments):
+                inext = (i + 1) % len(spline.bezier_points)
+                p1 = spline.bezier_points[i]
+                p2 = spline.bezier_points[inext]
+                points = interpolate_bezier(p1.co, p1.handle_right, p2.handle_left, p2.co, steps)
+                for i, p in enumerate(points):
+                    yield curve.matrix_world @ p, p1.radius + (p2.radius - p1.radius) * i / steps
 
-                    knot1 = spline.bezier_points[i].co
-                    handle1 = spline.bezier_points[i].handle_right
-                    handle2 = spline.bezier_points[inext].handle_left
-                    knot2 = spline.bezier_points[inext].co
 
-                    for p in interpolate_bezier(knot1, handle1, handle2, knot2, steps):
-                        yield curve.matrix_world @ p
+def get_equidistant_points(curve, offset, separation, steps=128):
+    contact_points = []
+
+    travel = 0.0
+    first = True
+    for point, next_point in windowed(curve_points_iterator(curve, steps), 2):
+        travel += (next_point[0] - point[0]).length
+        if first and travel > offset:
+            contact_points.append(point)
+            travel %= separation
+            first = False
+        elif not first and travel > separation:
+            contact_points.append(point)
+            travel %= separation
+
+    return contact_points
 
 
 def get_intersectable_curves(empty, p, n, grow_left):
@@ -385,12 +399,12 @@ def get_available_radius(empty, grow_left=True, steps=128):
     radius = sys.float_info.max if grow_left else -sys.float_info.max
     contact_point = None
 
-    intersectable_curves = get_intersectable_curves(empty, ep, en, grow_left)
-    for p in curve_points_iterator(intersectable_curves, steps):
-        r = get_touching_circle_radius(ep, et, en, p)
-        if (grow_left and r > 0.0 and r < radius) or (not grow_left and r < 0.0 and r > radius):
-            radius = r
-            contact_point = p
+    for curve in get_intersectable_curves(empty, ep, en, grow_left):
+        for p, _ in curve_points_iterator(curve, steps):
+            r = get_touching_circle_radius(ep, et, en, p)
+            if (grow_left and r > 0.0 and r < radius) or (not grow_left and r < 0.0 and r > radius):
+                radius = r
+                contact_point = p
 
     return radius, contact_point
 
