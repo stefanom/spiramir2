@@ -4,10 +4,6 @@
  This folder contains a Blender add-on to draw or fill curves with recursive
  non-interative logarithmic spirals.
  
- ## TODO
-
- *  test on the various expected containment shapes
-
 ## Attic
 
     # def get_contact_points(self, curves, steps):
