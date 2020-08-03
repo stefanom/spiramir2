@@ -102,8 +102,8 @@ def add_empty(type='ARROWS', name=None, parent=None, location=None):
     return empty
 
 
-def get_constrainted_empty(curve, position):
-    empty = add_empty()
+def get_constrainted_empty(curve, position, name=None):
+    empty = add_empty(name=name)
 
     constraint = empty.constraints.new('FOLLOW_PATH')
     constraint.target = curve
@@ -409,7 +409,7 @@ def get_available_radius(empty, grow_left=True, steps=128):
     return radius, contact_point
 
 
-def add_circle(radius, parent=None, contact_point=None, bevel_depth=0.0):
+def add_circle(radius, parent=None, contact_point=None, bevel_depth=0.0, name=None):
     if not radius:
         print('warning: tried to draw a zero circle')
         return
@@ -420,6 +420,9 @@ def add_circle(radius, parent=None, contact_point=None, bevel_depth=0.0):
         radius=abs(radius), location=(0, radius, 0))
     circle = bpy.context.object
     circle.data.bevel_depth = bevel_depth
+
+    if name:
+        circle.name = name
 
     if parent:
         circle.parent = parent

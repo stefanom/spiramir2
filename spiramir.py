@@ -145,14 +145,14 @@ class CURVE_OT_spiramir(bpy.types.Operator):
 
             if parent_curve:
                 growth_point, _ = utils.get_constrainted_empty(
-                    parent_curve, position)
+                    parent_curve, position, name="Growth Point")
                 grow_left = 'spiramir' not in parent_curve or (
                     'spiramir' in parent_curve and parent_curve['spiramir_direction'] == utils.CLOCKWISE)
                 available_radius, contact_point = utils.get_available_radius(
                     growth_point, grow_left=grow_left)
                 if self.draw_availability and contact_point:
                     utils.add_circle(
-                        available_radius, parent=growth_point, contact_point=contact_point)
+                        available_radius, parent=growth_point, contact_point=contact_point, name="Availability Circle")
 
                 available_radius = abs(available_radius)
 
@@ -200,14 +200,14 @@ class CURVE_OT_spiramir(bpy.types.Operator):
                 position, weight = utils.get_selected_point(parent_curve)
                 if position:
                     growth_point, _ = utils.get_constrainted_empty(
-                        parent_curve, position)
+                        parent_curve, position, name="Growth Point")
                     grow_left = 'spiramir' not in parent_curve or (
                         'spiramir' in parent_curve and parent_curve['spiramir_direction'] == utils.CLOCKWISE)
                     available_radius, contact_point = utils.get_available_radius(
                         growth_point, grow_left=grow_left)
                     if self.draw_availability and contact_point:
                         utils.add_circle(
-                            available_radius, parent=growth_point, contact_point=contact_point)
+                            available_radius, parent=growth_point, contact_point=contact_point, name="Availability Circle")
                     radius = self.max_growth_ratio * \
                         min(utils.spiral_radius_at_length(
                             weight, self.winding_factor), abs(available_radius))

@@ -53,14 +53,13 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
         if parent_curve and bpy.context.mode == 'EDIT_CURVE':
             position, _ = utils.get_selected_point(parent_curve)
             growth_point, _ = utils.get_constrainted_empty(
-                parent_curve, position)
+                parent_curve, position, name="Growth Point")
             grow_left = 'spiramir' not in parent_curve or (
                 'spiramir' in parent_curve and parent_curve['spiramir_direction'] == utils.CLOCKWISE)
             r, cp = utils.get_available_radius(
                 growth_point, grow_left=grow_left)
-            print(r, cp)
             utils.add_circle(r, parent=growth_point,
-                             contact_point=cp, bevel_depth=self.bevel_depth)
+                             contact_point=cp, bevel_depth=self.bevel_depth, name="Circle")
         else:
             drawn = 0
             for _ in range(self.max_attempts):
@@ -70,12 +69,12 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
                 position = random.uniform(0.0, 1.0)
 
                 growth_point, _ = utils.get_constrainted_empty(
-                    curve, position)
+                    curve, position, name="Growth Point")
                 r, cp = utils.get_available_radius(growth_point)
                 if r > self.min_radius:
                     r = min(r, self.max_radius)
                     utils.add_circle(
-                        r, parent=growth_point, contact_point=cp, bevel_depth=self.bevel_depth)
+                        r, parent=growth_point, contact_point=cp, bevel_depth=self.bevel_depth, name="Circle")
                     drawn += 1
                     if drawn == self.iterations:
                         break

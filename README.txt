@@ -6,7 +6,6 @@
  
  ## TODO
 
- *  see if spiramir and circles work together well
  *  test on the various expected containment shapes
 
 ## Attic
