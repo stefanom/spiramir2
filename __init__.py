@@ -4,8 +4,8 @@ bl_info = {
     "name": "Spiramir2",
     "author": "Stefano Mazzocchi",
     "description": "",
-    "blender": (2, 80, 0),
-    "version": (0, 0, 1),
+    "blender": (3, 0, 0),
+    "version": (0, 0, 3),
     "location": "View3D > Add > Curve",
     "warning": "",
     "wiki_url": "",
@@ -14,9 +14,9 @@ bl_info = {
 
 
 from . import circles
-from . import sprues
 from . import spiramir
-from . import utils
+from . import spiramir_sprues
+from . import sprues
 
 
 class CURVE_PT_spiramir(bpy.types.Panel):
@@ -24,19 +24,21 @@ class CURVE_PT_spiramir(bpy.types.Panel):
     bl_label = "Spiramir"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Create"
+    bl_category = "Spiramir"
 
     def draw(self, context):
         self.layout.operator('curve.spiramir')
         self.layout.operator('curve.spiramir_circles')
         self.layout.operator('curve.spiramir_sprues')
+        self.layout.operator('curve.sprues')
 
 
 classes = [
     CURVE_PT_spiramir,
     spiramir.CURVE_OT_spiramir,
-    sprues.CURVE_OT_spiramir_sprues,
+    spiramir_sprues.CURVE_OT_spiramir_sprues,
     circles.CURVE_OT_spiramir_circles,
+    sprues.CURVE_OT_sprues,
 ]
 
 addon_keymaps = []
@@ -45,15 +47,17 @@ addon_keymaps = []
 def menu_func(self, context):
     self.layout.separator()
     self.layout.operator(spiramir.CURVE_OT_spiramir.bl_idname)
-    self.layout.operator(sprues.CURVE_OT_spiramir_sprues.bl_idname)
+    self.layout.operator(spiramir_sprues.CURVE_OT_spiramir_sprues.bl_idname)
     self.layout.operator(circles.CURVE_OT_spiramir_circles.bl_idname)
+    self.layout.operator(sprues.CURVE_OT_sprues.bl_idname)
 
 
 def register():
     for cls in classes:
+        print(f"registering class {cls}")
         bpy.utils.register_class(cls)
 
-    #bpy.types.VIEW3D_MT_curve_add.append(menu_func)
+    bpy.types.VIEW3D_MT_curve_add.append(menu_func)
 
     # wm = bpy.context.window_manager
     # kc = wm.keyconfigs.addon
@@ -72,11 +76,12 @@ def register():
 
 
 def unregister():
+    print("Spiramir2 got UNregistered")
     # for km, kmi in addon_keymaps:
     #     km.keymap_items.remove(kmi)
     # addon_keymaps.clear()
 
-    # bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
+    bpy.types.VIEW3D_MT_curve_add.remove(menu_func)
 
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

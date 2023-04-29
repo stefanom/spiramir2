@@ -1,5 +1,4 @@
 import random
-import time
 
 import bpy
 
@@ -12,6 +11,7 @@ class CURVE_OT_spiramir_circles(bpy.types.Operator):
     bl_description = "Enclose with circles"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_category = "Spiramir"
     bl_options = {'REGISTER', 'UNDO'}
 
     iterations: bpy.props.IntProperty(

@@ -388,7 +388,7 @@ def get_intersectable_curves(empty, p, n, grow_left):
             if (grow_left and y > 0.0) or (not grow_left and y < 0.0):
                 intersectable_curves.append(curve)
                 break
-        
+ 
     print('kept %f%% (%i out of %i)' % (100 * len(intersectable_curves) / evaluated, len(intersectable_curves), evaluated))
 
     return intersectable_curves

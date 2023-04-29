@@ -6,10 +6,10 @@ from mathutils import Vector
 from . import utils
 
 
-class CURVE_OT_sprues(bpy.types.Operator):
-    bl_idname = "curve.sprues"
-    bl_label = " Sprues"
-    bl_description = "Create sprues"
+class CURVE_OT_spiramir_sprues(bpy.types.Operator):
+    bl_idname = "curve.spiramir_sprues"
+    bl_label = "Spiramir Sprues"
+    bl_description = "Create sprues for a spiramir"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Spiramir"
