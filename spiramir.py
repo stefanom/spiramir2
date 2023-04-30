@@ -10,7 +10,6 @@ class CURVE_OT_spiramir(bpy.types.Operator):
     bl_idname = "curve.spiramir"
     bl_label = "Spiramir"
     bl_description = "Create a spiramir"
-    bl_options = {'REGISTER', 'UNDO'}
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Spiramir"
@@ -194,7 +193,7 @@ class CURVE_OT_spiramir(bpy.types.Operator):
 
         single = False
 
-        parent_curve = context.object
+        parent_curve = context.active_object
 
         position = self.position
         radius = self.radius
